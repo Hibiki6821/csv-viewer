@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSVくじ商品分析ツール</title>
+  <!-- Tailwind CSSを読み込み -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    /* 日本語フォントと基本フォントを適用 */
+    body {
+      font-family: 'Inter', 'Noto Sans JP', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ファイル入力のデザインを改善 */
+    #csvFileInput {
+      transition: all 0.3s ease-in-out;
+    }
+
+    .rotate-180 {
+      transform: rotate(180deg);
+    }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+  <!-- パスワード認証画面 -->
+  <div id="password-container" class="fixed inset-0 bg-gray-100 flex items-center justify-center z-50">
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-sm">
+      <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">認証が必要です</h2>
+      <form id="password-form">
+        <div class="mb-4">
+          <label for="password-input" class="block text-sm font-medium text-gray-700 mb-2">パスワード</label>
+          <input type="password" id="password-input" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="パスワードを入力">
+        </div>
+        <p id="error-message" class="hidden text-red-500 text-sm mb-4 text-center">パスワードが違います。</p>
+        <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors">ログイン</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- メインコンテンツ -->
+  <div id="main-content" class="hidden">
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+      <!-- ヘッダー -->
+      <header class="text-center mb-8">
+        <h1 class="text-3xl sm:text-4xl font-bold text-gray-900">CSVくじ商品分析ツール</h1>
+        <p class="text-gray-600 mt-2">Fantiaの注文CSVをアップロードして、売上データを分析します。</p>
+      </header>
+
+      <!-- ファイルアップロードセクション -->
+      <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+        <div class="flex flex-col items-center">
+          <svg class="w-12 h-12 text-blue-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+          </svg>
+          <label for="csvFileInput" class="w-full cursor-pointer text-center text-sm font-medium text-gray-700 mb-2">
+            分析したいCSVファイルを選択、またはここにドラッグ＆ドロップしてください。
+          </label>
+          <input type="file" id="csvFileInput" accept=".csv" class="block w-full text-sm text-gray-500
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-full file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-blue-50 file:text-blue-700
+                        hover:file:bg-blue-100
+                    " />
+        </div>
+      </div>
+
+      <!-- ローディングスピナー -->
+      <div id="loadingIndicator" class="hidden text-center mt-8">
+        <svg class="animate-spin -ml-1 mr-3 h-8 w-8 text-blue-500 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <p class="mt-2 text-gray-600">データを分析中...</p>
+      </div>
+
+
+      <!-- 結果表示セクション -->
+      <div id="resultsContainer" class="mt-8 space-y-8">
+        <!-- 分析結果がここに動的に挿入されます -->
+      </div>
+    </div>
+  </div>
+
+
+  <script>
+    // --- パスワード認証関連の処理 ---
+    const passwordContainer = document.getElementById('password-container');
+    const mainContent = document.getElementById('main-content');
+    const passwordForm = document.getElementById('password-form');
+    const passwordInput = document.getElementById('password-input');
+    const errorMessage = document.getElementById('error-message');
+    const AUTH_TOKEN_KEY = 'auth_token_lottery_analyzer';
+    const CORRECT_PASSWORD = 'Bulma1234';
+
+    function setCookie(name, value, years) {
+      let expires = "";
+      if (years) {
+        const date = new Date();
+        date.setTime(date.getTime() + (years * 365 * 24 * 60 * 60 * 1000));
+        expires = "; expires=" + date.toUTCString();
+      }
+      // SameSite=Lax は一般的なCSRF攻撃を防ぐのに役立ちます
+      document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
+    }
+
+    function getCookie(name) {
+      const nameEQ = name + "=";
+      const ca = document.cookie.split(';');
+      for (let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) == ' ') c = c.substring(1, c.length);
+        if (c.indexOf(nameEQ) == 0) return c.substring(nameEQ.length, c.length);
+      }
+      return null;
+    }
+
+    function showMainContent() {
+      passwordContainer.classList.add('hidden');
+      mainContent.classList.remove('hidden');
+    }
+
+    // ページ読み込み時に認証状態をチェック
+    window.addEventListener('DOMContentLoaded', () => {
+      if (getCookie(AUTH_TOKEN_KEY) === CORRECT_PASSWORD) {
+        showMainContent();
+      } else {
+        passwordContainer.classList.remove('hidden');
+      }
+    });
+
+    // パスワードフォームの送信イベント
+    passwordForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (passwordInput.value === CORRECT_PASSWORD) {
+        // 認証成功：10年間有効なCookieをセット
+        setCookie(AUTH_TOKEN_KEY, CORRECT_PASSWORD, 10);
+        showMainContent();
+      } else {
+        // 認証失敗
+        errorMessage.classList.remove('hidden');
+        passwordInput.value = '';
+      }
+    });
+
+
+    // --- これより下はCSV分析ツールのロジック ---
+    const fileInput = document.getElementById('csvFileInput');
+    const resultsContainer = document.getElementById('resultsContainer');
+    const loadingIndicator = document.getElementById('loadingIndicator');
+
+    // ファイルが選択されたときのイベントリスナー
+    fileInput.addEventListener('change', handleFileSelect);
+
+    /**
+     * アコーディオンの開閉を制御します。
+     */
+    function toggleAccordion(element) {
+      const content = element.nextElementSibling;
+      const icon = element.querySelector('svg');
+      content.classList.toggle('hidden');
+      icon.classList.toggle('rotate-180');
+    }
+
+    /**
+     * ファイルが選択されたときに処理を開始します。
+     * @param {Event} event - ファイル選択イベント
+     */
+    function handleFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) {
+        return;
+      }
+
+      // 結果表示エリアとローディング表示を初期化
+      resultsContainer.innerHTML = '';
+      loadingIndicator.classList.remove('hidden');
+
+      const reader = new FileReader();
+
+      // ファイルの読み込みが完了したときの処理
+      reader.onload = function (e) {
+        try {
+          const csvText = e.target.result;
+          const { header, records } = parseCSV(csvText);
+          const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeData(records, header);
+          displayResults(dailyStats, productStats, totalRevenue, totalQuantity);
+        } catch (error) {
+          console.error("エラーが発生しました:", error);
+          displayError("ファイルの処理中にエラーが発生しました。CSVの形式が正しいか確認してください。");
+        } finally {
+          loadingIndicator.classList.add('hidden');
+        }
+      };
+
+      // ファイルの読み込みに失敗したときの処理
+      reader.onerror = function () {
+        displayError("ファイルの読み込みに失敗しました。");
+        loadingIndicator.classList.add('hidden');
+      };
+
+      // ファイルをテキストとして読み込み（文字コード: UTF-8）
+      reader.readAsText(file, 'UTF-8');
+    }
+
+    /**
+     * CSV文字列をパースしてヘッダーとデータ記録に分割します。
+     * @param {string} csvText - CSVファイルの全テキスト
+     * @returns {{header: string[], records: string[][]}} パースされたデータ
+     */
+    function parseCSV(csvText) {
+      const lines = csvText.replace(/\r/g, '').trim().split('\n').slice(2);
+      if (lines.length < 2) {
+        throw new Error("CSVデータが不十分です。");
+      }
+
+      const parseLine = (line) => {
+        const result = [];
+        let field = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+
+          if (char === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+              field += '"';
+              i++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (char === ',' && !inQuotes) {
+            result.push(field);
+            field = '';
+          } else {
+            field += char;
+          }
+        }
+        result.push(field);
+        return result;
+      };
+
+      const header = lines[0].split(',');
+      const records = lines.slice(1).filter(line => line.trim() !== '').map(line => parseLine(line));
+
+      return { header, records };
+    }
+
+    /**
+     * パースされたデータを分析し、統計情報を計算します。
+     * @param {string[][]} records - CSVの各行のデータ
+     * @param {string[]} header - CSVのヘッダー
+     * @returns {object} 分析結果
+     */
+    function analyzeData(records, header) {
+      const dailyStats = {};
+      const productStats = {};
+      let totalRevenue = 0;
+      let totalQuantity = 0;
+
+      const statusIndex = header.indexOf('注文ステータス');
+      const dateIndex = header.indexOf('注文日時');
+      const productNameIndex = header.indexOf('商品名');
+      const quantityIndex = header.indexOf('数量');
+      const userIdIndex = header.indexOf('ユーザーID');
+      const priceIndex = header.indexOf('合計金額（税込）');
+
+      if ([statusIndex, dateIndex, productNameIndex, quantityIndex, userIdIndex, priceIndex].includes(-1)) {
+        throw new Error("必要な列（注文ステータス、注文日時など）が見つかりません。");
+      }
+
+      for (const record of records) {
+        if (record.length !== header.length) {
+          console.warn('列数がヘッダーと一致しないため、この行をスキップします:', record);
+          continue;
+        }
+
+        if (record[statusIndex] === '取引完了') {
+          const date = record[dateIndex].split(' ')[0];
+          const productName = record[productNameIndex];
+          const quantity = parseInt(record[quantityIndex], 10) || 0;
+          const userId = record[userIdIndex];
+          const price = parseInt(record[priceIndex], 10) || 0;
+
+          totalRevenue += price;
+          totalQuantity += quantity;
+
+          if (!dailyStats[date]) {
+            dailyStats[date] = { quantity: 0, revenue: 0, products: {} };
+          }
+          dailyStats[date].quantity += quantity;
+          dailyStats[date].revenue += price;
+
+          if (!dailyStats[date].products[productName]) {
+            dailyStats[date].products[productName] = { quantity: 0, revenue: 0 };
+          }
+          dailyStats[date].products[productName].quantity += quantity;
+          dailyStats[date].products[productName].revenue += price;
+
+          if (!productStats[productName]) {
+            productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
+          }
+          productStats[productName].quantity += quantity;
+          productStats[productName].revenue += price;
+          productStats[productName].uniqueUsers.add(userId);
+        }
+      }
+      return { dailyStats, productStats, totalRevenue, totalQuantity };
+    }
+
+    /**
+     * 分析結果をHTMLとして画面に表示します。
+     */
+    function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
+      resultsContainer.innerHTML = `
+                ${createSummaryCard(totalRevenue, totalQuantity, productStats)}
+                ${createDailyProductStatsTable(dailyStats)}
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    ${createProductStatsTable(productStats)}
+                    ${createDailyStatsTable(dailyStats)}
+                </div>
+            `;
+    }
+
+    function createSummaryCard(totalRevenue, totalQuantity, productStats) {
+      const uniqueProductCount = Object.keys(productStats).length;
+      return `
+            <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 mb-8">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">全体サマリー</h2>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+                    <div>
+                        <p class="text-sm text-gray-500">総売上金額</p>
+                        <p class="text-2xl font-semibold text-blue-600">${totalRevenue.toLocaleString()}円</p>
+                    </div>
+                    <div>
+                        <p class="text-sm text-gray-500">総販売個数</p>
+                        <p class="text-2xl font-semibold text-blue-600">${totalQuantity.toLocaleString()}個</p>
+                    </div>
+                    <div>
+                        <p class="text-sm text-gray-500">販売商品数</p>
+                        <p class="text-2xl font-semibold text-blue-600">${uniqueProductCount}種類</p>
+                    </div>
+                </div>
+            </div>
+            `;
+    }
+
+    function createProductStatsTable(productStats) {
+      const sortedProducts = Object.entries(productStats).sort(([, a], [, b]) => b.revenue - a.revenue);
+
+      let tableRows = sortedProducts.map(([name, stats]) => {
+        const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
+        return `
+                    <tr class="border-b border-gray-200 hover:bg-gray-50">
+                        <td class="p-3 text-sm text-gray-700">${name}</td>
+                        <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
+                        <td class="p-3 text-right">${stats.uniqueUsers.size.toLocaleString()}</td>
+                        <td class="p-3 text-right">${avgPurchase.toFixed(2)}</td>
+                        <td class="p-3 text-right font-semibold text-green-600">${stats.revenue.toLocaleString()}円</td>
+                    </tr>
+                `;
+      }).join('');
+
+      if (!tableRows) {
+        tableRows = '<tr><td colspan="5" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+      }
+
+      return `
+                <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">商品別レポート</h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">商品名</th>
+                                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
+                                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者数</th>
+                                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">1人あたり平均購入数</th>
+                                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
+                                </tr>
+                            </thead>
+                            <tbody>${tableRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+    }
+
+    function createDailyStatsTable(dailyStats) {
+      const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
+
+      let tableRows = sortedDates.map(date => `
+                <tr class="border-b border-gray-200 hover:bg-gray-50">
+                    <td class="p-3 text-sm text-gray-700">${date}</td>
+                    <td class="p-3 text-right font-medium">${dailyStats[date].quantity.toLocaleString()}</td>
+                    <td class="p-3 text-right font-semibold text-green-600">${dailyStats[date].revenue.toLocaleString()}円</td>
+                </tr>
+            `).join('');
+
+      if (!tableRows) {
+        tableRows = '<tr><td colspan="3" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+      }
+
+      return `
+                <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">日別レポート</h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">日付</th>
+                                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
+                                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
+                                </tr>
+                            </thead>
+                            <tbody>${tableRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+    }
+
+    function createDailyProductStatsTable(dailyStats) {
+      const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
+
+      if (sortedDates.length === 0) {
+        return '';
+      }
+
+      const accordionItems = sortedDates.map(date => {
+        const products = dailyStats[date].products;
+        const sortedProducts = Object.entries(products).sort(([, a], [, b]) => b.quantity - a.quantity);
+
+        const productRows = sortedProducts.map(([name, stats]) => `
+                    <tr class="border-t border-gray-200">
+                        <td class="p-3 text-sm text-gray-600">${name}</td>
+                        <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
+                        <td class="p-3 text-right text-green-600">${stats.revenue.toLocaleString()}円</td>
+                    </tr>
+                `).join('');
+
+        return `
+                    <div class="border-b border-gray-200 last:border-b-0">
+                        <button class="w-full flex justify-between items-center p-4 text-left font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none" onclick="toggleAccordion(this)">
+                            <span>${date}</span>
+                            <svg class="w-5 h-5 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <div class="hidden p-4 bg-gray-50">
+                            <table class="w-full text-sm">
+                                <thead class="border-b">
+                                    <tr>
+                                        <th class="pb-2 text-left font-semibold text-gray-600">商品名</th>
+                                        <th class="pb-2 text-right font-semibold text-gray-600">販売個数</th>
+                                        <th class="pb-2 text-right font-semibold text-gray-600">売上</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${productRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+      }).join('');
+
+      return `
+                <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">日別・商品別レポート</h2>
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        ${accordionItems}
+                    </div>
+                </div>
+            `;
+    }
+
+
+    function displayError(message) {
+      resultsContainer.innerHTML = `
+                <div class="max-w-2xl mx-auto bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg" role="alert">
+                    <p class="font-bold">エラー</p>
+                    <p>${message}</p>
+                </div>
+            `;
+    }
+  </script>
+
+</body>
+</html>
