@@ -267,25 +267,20 @@
         let allCasts = []; // キャスト一覧
         let globalDailyStats = {}; // ★新規追加: 日別統計をグローバルに保持
 
-        // --- DOM要素 ---
-        const fileInput = document.getElementById('csvFileInput');
-        const resultsContainer = document.getElementById('resultsContainer');
-        const loadingIndicator = document.getElementById('loadingIndicator');
-        const castSelect = document.getElementById('castSelect');
-        // ▼▼▼ 変更: フォーム -> ボタンに変更 ▼▼▼
-        const addCastButton = document.getElementById('addCastButton');
-        // ▲▲▲ 変更 ▲▲▲
-        const newCastNameInput = document.getElementById('newCastNameInput');
-        const searchInput = document.getElementById('searchInput');
-        const castError = document.getElementById('castError'); // エラーメッセージ要素を取得
+        // --- DOM要素 (letで宣言し、後で代入する) ---
+        let fileInput;
+        let resultsContainer;
+        let loadingIndicator;
+        let castSelect;
+        let addCastButton;
+        let newCastNameInput;
+        let searchInput;
+        let castError;
+        let dailyDetailsModal;
+        let modalDateTitle;
+        let modalDateContent;
+        let closeModalButton;
         
-        // ▼▼▼ 新規追加: モーダル用DOM要素 ▼▼▼
-        const dailyDetailsModal = document.getElementById('dailyDetailsModal');
-        const modalDateTitle = document.getElementById('modalDateTitle');
-        const modalDateContent = document.getElementById('modalDateContent');
-        const closeModalButton = document.getElementById('closeModalButton');
-        // ▲▲▲ 新規追加: モーダル用DOM要素 ▲▲▲
-
         /**
          * メインアプリケーションの初期化（パスワード認証後に呼ばれる）
          */
@@ -361,9 +356,32 @@
          * イベントリスナーをセットアップ
          */
         function setupEventListeners() {
-            // ▼▼▼ 変更: フォーム送信 -> ボタンクリック ▼▼▼
-            addCastButton.addEventListener('click', handleAddCast);
+            // ▼▼▼ 変更: ここでDOM要素を確実に取得 ▼▼▼
+            fileInput = document.getElementById('csvFileInput');
+            resultsContainer = document.getElementById('resultsContainer');
+            loadingIndicator = document.getElementById('loadingIndicator');
+            castSelect = document.getElementById('castSelect');
+            addCastButton = document.getElementById('addCastButton');
+            newCastNameInput = document.getElementById('newCastNameInput');
+            searchInput = document.getElementById('searchInput');
+            castError = document.getElementById('castError');
+            dailyDetailsModal = document.getElementById('dailyDetailsModal');
+            modalDateTitle = document.getElementById('modalDateTitle');
+            modalDateContent = document.getElementById('modalDateContent');
+            closeModalButton = document.getElementById('closeModalButton');
             // ▲▲▲ 変更 ▲▲▲
+
+            // キャスト追加ボタン
+            addCastButton.addEventListener('click', handleAddCast);
+            
+            // ▼▼▼ 追加: キャスト入力欄でEnterキーを押したときの処理 ▼▼▼
+            newCastNameInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault(); // フォーム送信を防ぐ（もしformタグがあっても）
+                    handleAddCast();
+                }
+            });
+            // ▲▲▲ 追加 ▲▲▲
             
             // キャスト選択ドロップダウン
             castSelect.addEventListener('change', handleCastSelect);
@@ -701,10 +719,13 @@
          * 検索入力に基づいて表示結果をフィルタリングします。
          */
         function applySearchFilter() {
+            // resultsContainer がまだ存在しない（DOM読み込み前）場合は何もしない
+            if (!resultsContainer) return;
+
             const searchTerm = searchInput.value.toLowerCase();
             
             // 検索対象のテーブル行（商品別レポート）
-            const productRows = document.querySelectorAll(
+            const productRows = resultsContainer.querySelectorAll(
                 '#productStatsTable tbody tr' // <-- 日別アコーディオンを削除
             );
             
@@ -726,7 +747,7 @@
             });
 
             // ▼▼▼ 追加: モーダルが開いていれば、そちらも検索 ▼▼▼
-            if (!dailyDetailsModal.classList.contains('hidden')) {
+            if (dailyDetailsModal && !dailyDetailsModal.classList.contains('hidden')) {
                 applySearchFilterToModal();
             }
         }
@@ -735,8 +756,11 @@
          * ▼▼▼ 新規追加: モーダル内の検索を実行する関数 ▼▼▼
          */
         function applySearchFilterToModal() {
+            // modalDateContent がまだ存在しない場合は何もしない
+            if (!modalDateContent) return;
+
             const searchTerm = searchInput.value.toLowerCase();
-            const modalRows = document.querySelectorAll('#modalDateContent tbody tr');
+            const modalRows = modalDateContent.querySelectorAll('tbody tr');
 
             modalRows.forEach(row => {
                 if (row.dataset.empty) {
@@ -901,6 +925,11 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
  * エラーメッセージを表示します。
  */
 function displayError(message) {
+    // resultsContainerがまだ読み込まれていない場合はコンソールに出力
+    if (!resultsContainer) {
+        console.error("Early Error:", message);
+        return;
+    }
     // エラーメッセージは結果コンテナの *先頭* に追加する（既存の結果を消さない）
     const errorElement = document.createElement('div');
     errorElement.className = "max-w-2xl mx-auto bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg mb-4";
