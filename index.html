@@ -234,15 +234,27 @@
         let db, auth, userId, appId, correctPasswordHash; // correctPasswordHash は平文パスワードを保持する変数名として流用
         let globalDailyStats = {}; // 日別データをグローバルに保持
 
-        // --- DOM要素 ---
-        let passwordContainer, mainContent, passwordForm, passwordInput, errorMessage, 
-            showPasswordToggle, loginButton, loginButtonText, loginButtonSpinner, 
-            passwordLoadingMessage, castSelector, newCastNameInput, addCastButton, 
+        // --- DOM要素 (認証画面) ---
+        // 認証画面の要素は起動時にすぐ取得
+        const passwordContainer = document.getElementById('password-container');
+        const mainContent = document.getElementById('main-content');
+        const passwordForm = document.getElementById('password-form');
+        const passwordInput = document.getElementById('password-input');
+        const errorMessage = document.getElementById('error-message');
+        const showPasswordToggle = document.getElementById('show-password-toggle');
+        const loginButton = document.getElementById('login-button');
+        const loginButtonText = document.getElementById('login-button-text');
+        const loginButtonSpinner = document.getElementById('login-button-spinner');
+        const passwordLoadingMessage = document.getElementById('password-loading-message');
+        
+        // --- DOM要素 (メインコンテンツ) ---
+        // メインコンテンツの要素はログイン後に取得する
+        let castSelector, newCastNameInput, addCastButton, 
             castError, castLoadingMessage, uploadSection, fileInput, searchSection, 
             searchInput, loadingIndicator, resultsContainer, 
-           dailyDetailsModal, modalTitle, modalBody,
-           rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
-           rangeSummaryModal, rangeModalTitle, rangeModalBody;
+            dailyDetailsModal, modalTitle, modalBody,
+            rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
+            rangeSummaryModal, rangeModalTitle, rangeModalBody;
  
          /**
           * Cookieを設定します。
@@ -277,6 +289,30 @@
         function showMainContentAndInitApp() {
             passwordContainer.classList.add('hidden');
             mainContent.classList.remove('hidden');
+            
+            // メインコンテンツのDOM要素を取得
+            castSelector = document.getElementById('castSelector');
+            newCastNameInput = document.getElementById('newCastNameInput');
+            addCastButton = document.getElementById('addCastButton');
+            castError = document.getElementById('castError');
+            castLoadingMessage = document.getElementById('cast-loading-message');
+            uploadSection = document.getElementById('upload-section');
+            fileInput = document.getElementById('csvFileInput');
+            searchSection = document.getElementById('search-section');
+            searchInput = document.getElementById('searchInput');
+            loadingIndicator = document.getElementById('loadingIndicator');
+            resultsContainer = document.getElementById('resultsContainer');
+            dailyDetailsModal = document.getElementById('dailyDetailsModal');
+            modalTitle = document.getElementById('modalTitle');
+            modalBody = document.getElementById('modalBody');
+            rangeStartDateInput = document.getElementById('rangeStartDate');
+            rangeEndDateInput = document.getElementById('rangeEndDate');
+            rangeSummaryButton = document.getElementById('rangeSummaryButton');
+            rangeSummaryModal = document.getElementById('rangeSummaryModal');
+            rangeModalTitle = document.getElementById('rangeModalTitle');
+            rangeModalBody = document.getElementById('rangeModalBody');
+
+            // メインコンテンツのイベントリスナーを設定
             setupEventListeners();
         }
 
@@ -298,39 +334,7 @@
          * アプリのメイン初期化処理
          */
         async function initializeMainApp() {
-            // 1. DOM要素の取得
-            passwordContainer = document.getElementById('password-container');
-            mainContent = document.getElementById('main-content');
-            passwordForm = document.getElementById('password-form');
-            passwordInput = document.getElementById('password-input');
-            errorMessage = document.getElementById('error-message');
-            showPasswordToggle = document.getElementById('show-password-toggle');
-            loginButton = document.getElementById('login-button');
-            loginButtonText = document.getElementById('login-button-text');
-            loginButtonSpinner = document.getElementById('login-button-spinner');
-            passwordLoadingMessage = document.getElementById('password-loading-message');
-            castSelector = document.getElementById('castSelector');
-            newCastNameInput = document.getElementById('newCastNameInput');
-            addCastButton = document.getElementById('addCastButton');
-            castError = document.getElementById('castError');
-            castLoadingMessage = document.getElementById('cast-loading-message');
-            uploadSection = document.getElementById('upload-section');
-            fileInput = document.getElementById('csvFileInput');
-            searchSection = document.getElementById('search-section');
-            searchInput = document.getElementById('searchInput');
-            loadingIndicator = document.getElementById('loadingIndicator');
-            resultsContainer = document.getElementById('resultsContainer');
-            dailyDetailsModal = document.getElementById('dailyDetailsModal');
-            modalTitle = document.getElementById('modalTitle');
-            modalBody = document.getElementById('modalBody');
-            rangeStartDateInput = document.getElementById('rangeStartDate');
-            rangeEndDateInput = document.getElementById('rangeEndDate');
-            rangeSummaryButton = document.getElementById('rangeSummaryButton');
-            rangeSummaryModal = document.getElementById('rangeSummaryModal');
-            rangeModalTitle = document.getElementById('rangeModalTitle');
-            rangeModalBody = document.getElementById('rangeModalBody');
- 
-             // 2. Firebase設定
+             // 1. Firebase設定
              try {
                 // ▼▼▼ 変更: ここにFirebaseプロジェクトの設定を貼り付け ▼▼▼
                 // (ステップ1.4でコピーした const firebaseConfig = { ... } を貼り付けます)
@@ -354,20 +358,20 @@
                 // (セキュリティルール /artifacts/ここの文字列/public/... と一致させる)
                 appId = 'fantia-analyzer-app'; 
 
-                // 3. Firebase初期化
+                // 2. Firebase初期化
                 const app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
                 setLogLevel('Debug'); // デバッグ用
 
-                // 4. 認証状態の監視を先に設定
+                // 3. 認証状態の監視を先に設定
                 onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         // --- 認証成功時 (匿名 or ログイン済み) ---
                         userId = user.uid;
                         console.log("Firebase 認証成功. UserID:", userId);
 
-                        // 5. DBからパスワード（平文）を取得
+                        // 4. DBからパスワード（平文）を取得
                         try {
                             const passDocRef = doc(db, `artifacts/${appId}/public/data/config/password`);
                             const passDocSnap = await getDoc(passDocRef);
@@ -378,7 +382,7 @@
                                 correctPasswordHash = passDocSnap.data().hash; 
                                 console.log("パスワードの取得成功。");
                                 
-                                // 6. パスワード認証処理
+                                // 5. パスワード認証処理
                                 // 認証済みかCookieでチェック（Cookieの値も平文パスワード）
                                 if (getCookie('auth_token_lottery_analyzer') === correctPasswordHash) {
                                     showMainContentAndInitApp();
@@ -399,7 +403,7 @@
                             passwordLoadingMessage.classList.add('text-red-500');
                         }
                         
-                        // 7. パスワード認証フォームのイベントリスナー設定 (認証状態に関わらず設定)
+                        // 6. パスワード認証フォームのイベントリスナー設定 (認証状態に関わらず設定)
                         setupPasswordFormListeners();
 
                     } else {
@@ -472,6 +476,7 @@
 
         /**
          * メインアプリのイベントリスナーを設定します。
+         * (showMainContentAndInitAppから呼び出される)
          */
         function setupEventListeners() {
             // キャスト選択
@@ -1130,6 +1135,9 @@
          * 検索フィルターを適用します。
          */
         function applySearchFilter() {
+            // searchInputが初期化される前に呼ばれる可能性があるため、存在チェック
+            if (!searchInput) return; 
+            
             const query = searchInput.value.toLowerCase().trim();
             
             // 商品別レポートのフィルタリング
