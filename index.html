@@ -1,337 +1,910 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CSVくじ商品分析ツール</title>
-  <!-- Tailwind CSSを読み込み -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
-  <style>
-    /* 日本語フォントと基本フォントを適用 */
-    body {
-      font-family: 'Inter', 'Noto Sans JP', sans-serif;
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
-    }
-
-    /* ファイル入力のデザインを改善 */
-    #csvFileInput {
-      transition: all 0.3s ease-in-out;
-    }
-
-    .rotate-180 {
-      transform: rotate(180deg);
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- ▼▼▼ 変更: タイトルを任意で変更してください ▼▼▼ -->
+    <title>CSVくじ商品分析ツール (v2) - GitHub版</title>
+    <!-- Tailwind CSSを読み込み -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        /* 日本語フォントと基本フォントを適用 */
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* ファイル入力のデザインを改善 */
+        #csvFileInput {
+            transition: all 0.3s ease-in-out;
+        }
+        .rotate-180 {
+            transform: rotate(180deg);
+        }
+        /* スピナーを中央に配置 */
+        #loadingIndicator {
+            display: none; /* 初期状態は非表示 */
+            position: fixed; /* 画面中央に固定 */
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+    </style>
 </head>
 <body class="bg-gray-50 text-gray-800">
 
-  <!-- パスワード認証画面 -->
-  <div id="password-container" class="fixed inset-0 bg-gray-100 flex items-center justify-center z-50">
-    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-sm">
-      <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">認証が必要です</h2>
-      <form id="password-form">
-        <div class="mb-4">
-          <label for="password-input" class="block text-sm font-medium text-gray-700 mb-2">パスワード</label>
-          <input type="password" id="password-input" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="パスワードを入力">
+    <!-- パスワード認証画面 -->
+    <div id="password-container" class="fixed inset-0 bg-gray-100 flex items-center justify-center z-50">
+        <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-sm">
+            <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">認証が必要です</h2>
+            <form id="password-form">
+                <div class="mb-4">
+                    <label for="password-input" class="block text-sm font-medium text-gray-700 mb-2">パスワード</label>
+                    <input type="password" id="password-input" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="パスワードを入力">
+                </div>
+                <p id="error-message" class="hidden text-red-500 text-sm mb-4 text-center">パスワードが違います。</p>
+                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors">ログイン</button>
+            </form>
         </div>
-        <p id="error-message" class="hidden text-red-500 text-sm mb-4 text-center">パスワードが違います。</p>
-        <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors">ログイン</button>
-      </form>
     </div>
-  </div>
+    
+    <!-- メインコンテンツ -->
+    <div id="main-content" class="hidden">
+        <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+            <!-- ヘッダー -->
+            <header class="text-center mb-8">
+                <h1 class="text-3xl sm:text-4xl font-bold text-gray-900">CSVくじ商品分析ツール</h1>
+                <p class="text-gray-600 mt-2">Fantiaの注文CSVをアップロードして、売上データを分析します。</p>
+            </header>
 
-  <!-- メインコンテンツ -->
-  <div id="main-content" class="hidden">
-    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
-      <!-- ヘッダー -->
-      <header class="text-center mb-8">
-        <h1 class="text-3xl sm:text-4xl font-bold text-gray-900">CSVくじ商品分析ツール</h1>
-        <p class="text-gray-600 mt-2">Fantiaの注文CSVをアップロードして、売上データを分析します。</p>
-      </header>
+            <!-- ▼▼▼ 新規追加: キャスト管理 & 検索セクション ▼▼▼ -->
+            <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                <!-- キャスト管理 -->
+                <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">キャスト管理</h2>
+                    <div class="space-y-4">
+                        <!-- キャスト選択 -->
+                        <div>
+                            <label for="castSelect" class="block text-sm font-medium text-gray-700 mb-1">キャスト選択</label>
+                            <select id="castSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                                <option value="">まずキャストを追加してください</option>
+                            </select>
+                        </div>
+                        <!-- キャスト追加 -->
+                        <form id="addCastForm" class="flex items-end space-x-2">
+                            <div class="flex-grow">
+                                <label for="newCastNameInput" class="block text-sm font-medium text-gray-700 mb-1">新規キャスト追加</label>
+                                <input type="text" id="newCastNameInput" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="キャスト名を入力">
+                            </div>
+                            <button type="submit" class="bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors">追加</button>
+                        </form>
+                        <!-- ▼▼▼ エラーメッセージ表示用に追加 ▼▼▼ -->
+                        <p id="castError" class="text-red-500 text-sm mt-2 hidden"></p>
+                    </div>
+                </div>
+                
+                <!-- 検索 -->
+                <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">商品名検索</h2>
+                    <div>
+                        <label for="searchInput" class="block text-sm font-medium text-gray-700 mb-1">レポート内の商品を検索</label>
+                        <input type="search" id="searchInput" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="商品名を入力...">
+                    </div>
+                </div>
+            </div>
+            <!-- ▲▲▲ 新規追加: キャスト管理 & 検索セクション ▲▲▲ -->
 
-      <!-- ファイルアップロードセクション -->
-      <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-        <div class="flex flex-col items-center">
-          <svg class="w-12 h-12 text-blue-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-          </svg>
-          <label for="csvFileInput" class="w-full cursor-pointer text-center text-sm font-medium text-gray-700 mb-2">
-            分析したいCSVファイルを選択、またはここにドラッグ＆ドロップしてください。
-          </label>
-          <input type="file" id="csvFileInput" accept=".csv" class="block w-full text-sm text-gray-500
+
+            <!-- ファイルアップロードセクション -->
+            <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                <div classs="flex flex-col items-center">
+                    <svg class="w-12 h-12 text-blue-500 mb-3 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                    <label for="csvFileInput" class="w-full cursor-pointer text-center text-sm font-medium text-gray-700 mb-2 block">
+                        分析したいCSVファイルを選択してください。<br>(キャストを選択してからアップロードしてください)
+                    </label>
+                    <input type="file" id="csvFileInput" accept=".csv" class="block w-full text-sm text-gray-500
                         file:mr-4 file:py-2 file:px-4
                         file:rounded-full file:border-0
                         file:text-sm file:font-semibold
                         file:bg-blue-50 file:text-blue-700
                         hover:file:bg-blue-100
-                    " />
+                    "/>
+                </div>
+            </div>
+
+            <!-- ローディングスピナー -->
+            <div id="loadingIndicator">
+                <svg class="animate-spin -ml-1 mr-3 h-10 w-10 text-blue-500 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <p class="mt-2 text-gray-600 font-semibold">データを処理中...</p>
+            </div>
+
+
+            <!-- 結果表示セクション -->
+            <div id="resultsContainer" class="mt-8 space-y-8">
+                <!-- 分析結果がここに動的に挿入されます -->
+                <p class="text-center text-gray-500">キャストを選択してCSVをアップロードするか、既存のデータを表示してください。</p>
+            </div>
         </div>
-      </div>
-
-      <!-- ローディングスピナー -->
-      <div id="loadingIndicator" class="hidden text-center mt-8">
-        <svg class="animate-spin -ml-1 mr-3 h-8 w-8 text-blue-500 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-        <p class="mt-2 text-gray-600">データを分析中...</p>
-      </div>
-
-
-      <!-- 結果表示セクション -->
-      <div id="resultsContainer" class="mt-8 space-y-8">
-        <!-- 分析結果がここに動的に挿入されます -->
-      </div>
     </div>
-  </div>
+
+    <!-- ▼▼▼ 新規追加: 日別詳細モーダル ▼▼▼ -->
+    <div id="dailyDetailsModal" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50 hidden">
+        <!-- モーダルコンテンツコンテナ -->
+        <div class="bg-white rounded-xl shadow-lg w-full max-w-2xl mx-4 p-6 border border-gray-200">
+            <!-- モーダルヘッダー -->
+            <div class="flex justify-between items-center border-b pb-3 mb-4">
+                <h2 id="modalDateTitle" class="text-xl font-bold text-gray-800"></h2>
+                <button id="closeModalButton" class="text-gray-500 hover:text-gray-800 focus:outline-none">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <!-- モーダルボディ -->
+            <div id="modalDateContent" class="overflow-y-auto max-h-[70vh]">
+                <!-- 日別・商品別テーブルがここに挿入されます -->
+            </div>
+        </div>
+    </div>
+    <!-- ▲▲▲ 新規追加: 日別詳細モーダル ▲▲▲ -->
 
 
-  <script>
-    // --- パスワード認証関連の処理 ---
-    const passwordContainer = document.getElementById('password-container');
-    const mainContent = document.getElementById('main-content');
-    const passwordForm = document.getElementById('password-form');
-    const passwordInput = document.getElementById('password-input');
-    const errorMessage = document.getElementById('error-message');
-    const AUTH_TOKEN_KEY = 'auth_token_lottery_analyzer';
-    const CORRECT_PASSWORD = 'Bulma1234';
+    <!-- ▼▼▼ ここからパスワード認証スクリプトを復活・修正 ▼▼▼ -->
+    <script>
+        // --- パスワード認証関連の処理 ---
+        const passwordContainer = document.getElementById('password-container');
+        const mainContent = document.getElementById('main-content');
+        const passwordForm = document.getElementById('password-form');
+        const passwordInput = document.getElementById('password-input');
+        const errorMessage = document.getElementById('error-message');
+        const AUTH_TOKEN_KEY = 'auth_token_lottery_analyzer';
+        // ★パスワードをv2用に変更 (もし元のパスワードが良い場合は 'Bulma1234' に戻してください)
+        const CORRECT_PASSWORD = 'Bulma1234'; 
 
-    function setCookie(name, value, years) {
-      let expires = "";
-      if (years) {
-        const date = new Date();
-        date.setTime(date.getTime() + (years * 365 * 24 * 60 * 60 * 1000));
-        expires = "; expires=" + date.toUTCString();
-      }
-      // SameSite=Lax は一般的なCSRF攻撃を防ぐのに役立ちます
-      document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
-    }
-
-    function getCookie(name) {
-      const nameEQ = name + "=";
-      const ca = document.cookie.split(';');
-      for (let i = 0; i < ca.length; i++) {
-        let c = ca[i];
-        while (c.charAt(0) == ' ') c = c.substring(1, c.length);
-        if (c.indexOf(nameEQ) == 0) return c.substring(nameEQ.length, c.length);
-      }
-      return null;
-    }
-
-    function showMainContent() {
-      passwordContainer.classList.add('hidden');
-      mainContent.classList.remove('hidden');
-    }
-
-    // ページ読み込み時に認証状態をチェック
-    window.addEventListener('DOMContentLoaded', () => {
-      if (getCookie(AUTH_TOKEN_KEY) === CORRECT_PASSWORD) {
-        showMainContent();
-      } else {
-        passwordContainer.classList.remove('hidden');
-      }
-    });
-
-    // パスワードフォームの送信イベント
-    passwordForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (passwordInput.value === CORRECT_PASSWORD) {
-        // 認証成功：10年間有効なCookieをセット
-        setCookie(AUTH_TOKEN_KEY, CORRECT_PASSWORD, 10);
-        showMainContent();
-      } else {
-        // 認証失敗
-        errorMessage.classList.remove('hidden');
-        passwordInput.value = '';
-      }
-    });
-
-
-    // --- これより下はCSV分析ツールのロジック ---
-    const fileInput = document.getElementById('csvFileInput');
-    const resultsContainer = document.getElementById('resultsContainer');
-    const loadingIndicator = document.getElementById('loadingIndicator');
-
-    // ファイルが選択されたときのイベントリスナー
-    fileInput.addEventListener('change', handleFileSelect);
-
-    /**
-     * アコーディオンの開閉を制御します。
-     */
-    function toggleAccordion(element) {
-      const content = element.nextElementSibling;
-      const icon = element.querySelector('svg');
-      content.classList.toggle('hidden');
-      icon.classList.toggle('rotate-180');
-    }
-
-    /**
-     * ファイルが選択されたときに処理を開始します。
-     * @param {Event} event - ファイル選択イベント
-     */
-    function handleFileSelect(event) {
-      const file = event.target.files[0];
-      if (!file) {
-        return;
-      }
-
-      // 結果表示エリアとローディング表示を初期化
-      resultsContainer.innerHTML = '';
-      loadingIndicator.classList.remove('hidden');
-
-      const reader = new FileReader();
-
-      // ファイルの読み込みが完了したときの処理
-      reader.onload = function (e) {
-        try {
-          const csvText = e.target.result;
-          const { header, records } = parseCSV(csvText);
-          const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeData(records, header);
-          displayResults(dailyStats, productStats, totalRevenue, totalQuantity);
-        } catch (error) {
-          console.error("エラーが発生しました:", error);
-          displayError("ファイルの処理中にエラーが発生しました。CSVの形式が正しいか確認してください。");
-        } finally {
-          loadingIndicator.classList.add('hidden');
-        }
-      };
-
-      // ファイルの読み込みに失敗したときの処理
-      reader.onerror = function () {
-        displayError("ファイルの読み込みに失敗しました。");
-        loadingIndicator.classList.add('hidden');
-      };
-
-      // ファイルをテキストとして読み込み（文字コード: UTF-8）
-      reader.readAsText(file, 'UTF-8');
-    }
-
-    /**
-     * CSV文字列をパースしてヘッダーとデータ記録に分割します。
-     * @param {string} csvText - CSVファイルの全テキスト
-     * @returns {{header: string[], records: string[][]}} パースされたデータ
-     */
-    function parseCSV(csvText) {
-      const lines = csvText.replace(/\r/g, '').trim().split('\n').slice(2);
-      if (lines.length < 2) {
-        throw new Error("CSVデータが不十分です。");
-      }
-
-      const parseLine = (line) => {
-        const result = [];
-        let field = '';
-        let inQuotes = false;
-
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i];
-
-          if (char === '"') {
-            if (inQuotes && line[i + 1] === '"') {
-              field += '"';
-              i++;
-            } else {
-              inQuotes = !inQuotes;
+        function setCookie(name, value, years) {
+            let expires = "";
+            if (years) {
+                const date = new Date();
+                date.setTime(date.getTime() + (years * 365 * 24 * 60 * 60 * 1000));
+                expires = "; expires=" + date.toUTCString();
             }
-          } else if (char === ',' && !inQuotes) {
-            result.push(field);
-            field = '';
-          } else {
-            field += char;
-          }
-        }
-        result.push(field);
-        return result;
-      };
-
-      const header = lines[0].split(',');
-      const records = lines.slice(1).filter(line => line.trim() !== '').map(line => parseLine(line));
-
-      return { header, records };
-    }
-
-    /**
-     * パースされたデータを分析し、統計情報を計算します。
-     * @param {string[][]} records - CSVの各行のデータ
-     * @param {string[]} header - CSVのヘッダー
-     * @returns {object} 分析結果
-     */
-    function analyzeData(records, header) {
-      const dailyStats = {};
-      const productStats = {};
-      let totalRevenue = 0;
-      let totalQuantity = 0;
-
-      const statusIndex = header.indexOf('注文ステータス');
-      const dateIndex = header.indexOf('注文日時');
-      const productNameIndex = header.indexOf('商品名');
-      const quantityIndex = header.indexOf('数量');
-      const userIdIndex = header.indexOf('ユーザーID');
-      const priceIndex = header.indexOf('合計金額（税込）');
-
-      if ([statusIndex, dateIndex, productNameIndex, quantityIndex, userIdIndex, priceIndex].includes(-1)) {
-        throw new Error("必要な列（注文ステータス、注文日時など）が見つかりません。");
-      }
-
-      for (const record of records) {
-        if (record.length !== header.length) {
-          console.warn('列数がヘッダーと一致しないため、この行をスキップします:', record);
-          continue;
+            document.cookie = name + "=" + (value || "")  + expires + "; path=/; SameSite=Lax";
         }
 
-        if (record[statusIndex] === '取引完了') {
-          const date = record[dateIndex].split(' ')[0];
-          const productName = record[productNameIndex];
-          const quantity = parseInt(record[quantityIndex], 10) || 0;
-          const userId = record[userIdIndex];
-          const price = parseInt(record[priceIndex], 10) || 0;
-
-          totalRevenue += price;
-          totalQuantity += quantity;
-
-          if (!dailyStats[date]) {
-            dailyStats[date] = { quantity: 0, revenue: 0, products: {} };
-          }
-          dailyStats[date].quantity += quantity;
-          dailyStats[date].revenue += price;
-
-          if (!dailyStats[date].products[productName]) {
-            dailyStats[date].products[productName] = { quantity: 0, revenue: 0 };
-          }
-          dailyStats[date].products[productName].quantity += quantity;
-          dailyStats[date].products[productName].revenue += price;
-
-          if (!productStats[productName]) {
-            productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
-          }
-          productStats[productName].quantity += quantity;
-          productStats[productName].revenue += price;
-          productStats[productName].uniqueUsers.add(userId);
+        function getCookie(name) {
+            const nameEQ = name + "=";
+            const ca = document.cookie.split(';');
+            for(let i=0; i < ca.length; i++) {
+                let c = ca[i];
+                while (c.charAt(0)==' ') c = c.substring(1,c.length);
+                if (c.indexOf(nameEQ) == 0) return c.substring(nameEQ.length,c.length);
+            }
+            return null;
         }
-      }
-      return { dailyStats, productStats, totalRevenue, totalQuantity };
-    }
 
-    /**
-     * 分析結果をHTMLとして画面に表示します。
-     */
-    function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
-      resultsContainer.innerHTML = `
+        function showMainContentAndInitApp() {
+            passwordContainer.classList.add('hidden');
+            mainContent.classList.remove('hidden');
+            
+            // ★重要: 認証成功後にメインのアプリを初期化
+            if (window.initializeMainApp) {
+                window.initializeMainApp();
+            } else {
+                console.error("initializeMainApp 関数が見つかりません。");
+            }
+        }
+
+        // ページ読み込み時に認証状態をチェック
+        window.addEventListener('DOMContentLoaded', () => {
+             if (getCookie(AUTH_TOKEN_KEY) === CORRECT_PASSWORD) {
+                // 認証済みならメインコンテンツを表示し、アプリを初期化
+                showMainContentAndInitApp();
+            } else {
+                // 未認証ならパスワード画面を表示
+                passwordContainer.classList.remove('hidden');
+            }
+        });
+
+        // パスワードフォームの送信イベント
+        passwordForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (passwordInput.value === CORRECT_PASSWORD) {
+                // 認証成功：10年間有効なCookieをセット
+                setCookie(AUTH_TOKEN_KEY, CORRECT_PASSWORD, 10);
+                // メインコンテンツを表示し、アプリを初期化
+                showMainContentAndInitApp();
+            } else {
+                // 認証失敗
+                errorMessage.classList.remove('hidden');
+                passwordInput.value = '';
+            }
+        });
+    </script>
+    <!-- ▲▲▲ ここまでパスワード認証スクリプト ▲▲▲ -->
+
+
+    <!-- ============================================= -->
+    <script type="module">
+        // --- Firebase SDKのインポート ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, // Canvas環境では不要だが、GitHub版では削除
+            onAuthStateChanged
+            // setLogLevel を auth から削除
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            addDoc, 
+            setDoc, 
+            collection, 
+            query, 
+            where, 
+            getDocs,
+            onSnapshot,
+            writeBatch,
+            setLogLevel // <-- firestore モジュールからインポート
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- グローバル変数 ---
+        let db, auth, userId, appId;
+        let currentCastId = null; // 現在選択中のキャストID
+        let allCasts = []; // キャスト一覧
+        let globalDailyStats = {}; // ★新規追加: 日別統計をグローバルに保持
+
+        // --- DOM要素 ---
+        const fileInput = document.getElementById('csvFileInput');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const castSelect = document.getElementById('castSelect');
+        const addCastForm = document.getElementById('addCastForm');
+        const newCastNameInput = document.getElementById('newCastNameInput');
+        const searchInput = document.getElementById('searchInput');
+        const castError = document.getElementById('castError'); // エラーメッセージ要素を取得
+        
+        // ▼▼▼ 新規追加: モーダル用DOM要素 ▼▼▼
+        const dailyDetailsModal = document.getElementById('dailyDetailsModal');
+        const modalDateTitle = document.getElementById('modalDateTitle');
+        const modalDateContent = document.getElementById('modalDateContent');
+        const closeModalButton = document.getElementById('closeModalButton');
+        // ▲▲▲ 新規追加: モーダル用DOM要素 ▲▲▲
+
+        /**
+         * メインアプリケーションの初期化（パスワード認証後に呼ばれる）
+         */
+        window.initializeMainApp = async function() {
+            try {
+                // ▼▼▼ 変更: ここにFirebaseプロジェクトの設定を貼り付け ▼▼▼
+                // (ステップ1.4でコピーした const firebaseConfig = { ... } を貼り付けます)
+              const firebaseConfig = {
+                apiKey: "AIzaSyDDz9cs9Wgx8Npjrh7FwUB4kF1h8Zwsiik",
+                authDomain: "fantia-csv.firebaseapp.com",
+                projectId: "fantia-csv",
+                storageBucket: "fantia-csv.firebasestorage.app",
+                messagingSenderId: "457081920405",
+                appId: "1:457081920405:web:6a33cb7f82e1ff7739f49c",
+                measurementId: "G-W1XS2E6VZ9"
+              };
+                // ▲▲▲ 変更 ▲▲▲
+
+                
+                // ▼▼▼ 変更: appIdを固定の文字列に設定 ▼▼▼
+                // (ステップ1.3のセキュリティルール /artifacts/ここの文字列/users/... と一致させる)
+                appId = 'fantia-analyzer-app'; 
+
+
+                if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY_HERE") {
+                    displayError("Firebase APIキーが設定されていません。HTMLファイルを編集して 'firebaseConfig' を設定してください。");
+                    console.error("Firebase apiKey is missing.");
+                    return;
+                }
+
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // デバッグログを有効化 (Firestoreのログ)
+                // setLogLevel('debug');
+
+                // 認証状態の監視
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        // 認証が確認できたら各種イベントリスナーを設定
+                        setupEventListeners();
+                        // キャスト情報を読み込む
+                        await loadCasts();
+                    } else {
+                        // ユーザーがまだ認証されていない場合
+                        await authenticateUser();
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase初期化エラー:", error);
+                displayError("アプリケーションの初期化に失敗しました。" + error.message);
+            }
+        }
+
+        /**
+         * Firebase認証を実行
+         */
+        async function authenticateUser() {
+            try {
+                // ▼▼▼ 変更: 匿名認証のみを使用するように簡素化 ▼▼▼
+                await signInAnonymously(auth);
+                // onAuthStateChanged が再度トリガーされ、userId が設定される
+            } catch (error) {
+                console.error("認証エラー:", error);
+                displayError("認証に失敗しました。" + error.message);
+            }
+        }
+
+        /**
+         * イベントリスナーをセットアップ
+         */
+        function setupEventListeners() {
+            // 新規キャスト追加フォーム
+            addCastForm.addEventListener('submit', handleAddCast);
+            // キャスト選択ドロップダウン
+            castSelect.addEventListener('change', handleCastSelect);
+            // ファイル入力
+            fileInput.addEventListener('change', handleFileSelect);
+            // 検索ボックス
+            searchInput.addEventListener('input', applySearchFilter);
+
+            // ▼▼▼ 新規追加: モーダルイベントリスナー ▼▼▼
+            closeModalButton.addEventListener('click', hideDailyDetailsModal);
+            dailyDetailsModal.addEventListener('click', (e) => {
+                // オーバーレイ（背景）クリックで閉じる
+                if (e.target === dailyDetailsModal) {
+                    hideDailyDetailsModal();
+                }
+            });
+            // ▲▲▲ 新規追加: モーダルイベントリスナー ▲▲▲
+        }
+
+        // --- キャスト管理 ---
+        
+        /**
+         * Firestoreからキャスト一覧を読み込み、ドロップダウンを更新
+         */
+        async function loadCasts() {
+            if (!userId || !db) return;
+            
+            const castsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/casts`);
+            
+            try {
+                // リアルタイム更新をリッスン
+                onSnapshot(castsCollectionRef, (snapshot) => {
+                    allCasts = [];
+                    castSelect.innerHTML = ''; // 一旦クリア
+                    
+                    if (snapshot.empty) {
+                        castSelect.innerHTML = '<option value="">まずキャストを追加してください</option>';
+                        currentCastId = null;
+                        return;
+                    }
+
+                    castSelect.innerHTML = '<option value="">キャストを選択してください</option>';
+                    snapshot.forEach((doc) => {
+                        const cast = { id: doc.id, ...doc.data() };
+                        allCasts.push(cast);
+                        const option = document.createElement('option');
+                        option.value = cast.id;
+                        option.textContent = cast.name;
+                        castSelect.appendChild(option);
+                    });
+                    
+                    // もし以前選択していたキャストがあれば、それを再度選択状態にする
+                    if (currentCastId && allCasts.some(c => c.id === currentCastId)) {
+                        castSelect.value = currentCastId;
+                    } else {
+                        currentCastId = null;
+                    }
+                }, (error) => {
+                    console.error("キャストの読み込みエラー:", error);
+                    displayError("キャスト一覧の読み込みに失敗しました。");
+                });
+                
+            } catch (error) {
+                console.error("キャストの読み込みエラー:", error);
+                displayError("キャスト一覧の読み込みに失敗しました。");
+            }
+        }
+        
+        /**
+         * 新規キャスト追加フォームの処理
+         */
+        async function handleAddCast(e) {
+            e.preventDefault();
+            castError.classList.add('hidden'); // エラーをリセット
+            castError.textContent = '';
+
+            const castName = newCastNameInput.value.trim();
+            if (!castName) {
+                // alert("キャスト名を入力してください。"); // <-- これを削除
+                castError.textContent = "キャスト名を入力してください。"; // <-- 代わりに表示
+                castError.classList.remove('hidden');
+                return;
+            }
+            if (!userId || !db) {
+                // displayError("データベースに接続されていません。"); // <-- これを削除
+                castError.textContent = "データベースに接続されていません。";
+                castError.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const castsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/casts`);
+                await addDoc(castsCollectionRef, { name: castName });
+                newCastNameInput.value = ''; // 入力欄をクリア
+                // onSnapshotが自動でドロップダウンを更新する
+            } catch (error) {
+                console.error("キャスト追加エラー:", error);
+                // displayError("キャストの追加に失敗しました。"); // <-- これを削除
+                castError.textContent = "キャストの追加に失敗しました: " + error.message;
+                castError.classList.remove('hidden');
+            }
+        }
+
+        /**
+         * キャスト選択ドロップダウンの処理
+         */
+        function handleCastSelect() {
+            currentCastId = castSelect.value;
+            if (currentCastId) {
+                loadCastData(currentCastId);
+            } else {
+                resultsContainer.innerHTML = '<p class="text-center text-gray-500">キャストを選択してください。</p>';
+            }
+        }
+
+        // --- データ処理 (CSVアップロード) ---
+        
+        /**
+         * ファイル選択時の処理
+         */
+        async function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!currentCastId) {
+                displayError("先にキャストを選択または追加してください。");
+                fileInput.value = ''; // ファイル選択をリセット
+                return;
+            }
+
+            resultsContainer.innerHTML = '';
+            loadingIndicator.style.display = 'block';
+
+            const reader = new FileReader();
+            
+            reader.onload = async (e) => {
+                try {
+                    const csvText = e.target.result;
+                    const { header, records } = parseCSV(csvText);
+                    
+                    // 注文ID列を特定（重複排除と更新のため）
+                    const orderIdIndex = header.indexOf('注文ID');
+                    if (orderIdIndex === -1) {
+                        throw new Error("CSVに「注文ID」列が見つかりません。データのマージに必須です。");
+                    }
+                    
+                    // バッチ処理の準備
+                    const batch = writeBatch(db);
+                    const ordersCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/casts/${currentCastId}/orders`);
+                    
+                    let processedCount = 0;
+                    
+                    // 必要な列のインデックスを取得
+                    const indexes = {
+                        status: header.indexOf('注文ステータス'),
+                        date: header.indexOf('注文日時'),
+                        productName: header.indexOf('商品名'),
+                        quantity: header.indexOf('数量'),
+                        userId: header.indexOf('ユーザーID'),
+                        price: header.indexOf('合計金額（税込）'),
+                        orderId: orderIdIndex
+                    };
+
+                    // ヘッダー名（日本語）が完全一致しない場合も考慮
+                    // (例: "合計金額(税込)" vs "合計金額（税込）")
+                    // 今回は完全一致を前提とするが、実運用では柔軟なヘッダーマッピングが必要かも
+                    
+                    const missingColumns = [];
+                    for (const key in indexes) {
+                        if (indexes[key] === -1) {
+                            // CSVのヘッダーで見つからなかった列名を記録
+                            // (ただし、indexesのキーは英語なので、対応する日本語名を出す)
+                            const columnMap = {
+                                status: '注文ステータス', date: '注文日時', productName: '商品名',
+                                quantity: '数量', userId: 'ユーザーID', price: '合計金額（税込）',
+                                orderId: '注文ID'
+                            };
+                            missingColumns.push(columnMap[key] || key);
+                        }
+                    }
+                    if (missingColumns.length > 0) {
+                         throw new Error(`必要な列が見つかりません: ${missingColumns.join(', ')}`);
+                    }
+
+
+                    for (const record of records) {
+                        if (record.length !== header.length) {
+                            console.warn('列数がヘッダーと一致しないため、この行をスキップします:', record);
+                            continue;
+                        }
+
+                        const orderId = record[indexes.orderId];
+                        if (!orderId) {
+                            console.warn('注文IDがないため、この行をスキップします:', record);
+                            continue;
+                        }
+
+                        // Firestoreに保存するデータオブジェクトを作成
+                        const orderData = {
+                            status: record[indexes.status],
+                            orderDate: record[indexes.date], // 日付文字列のまま保存
+                            productName: record[indexes.productName],
+                            quantity: parseInt(record[indexes.quantity], 10) || 0,
+                            userId: record[indexes.userId],
+                            price: parseInt(record[indexes.price], 10) || 0
+                        };
+                        
+                        // 注文IDをドキュメントIDとして設定
+                        const docRef = doc(ordersCollectionRef, orderId);
+                        batch.set(docRef, orderData); // setは上書き。これでデータが最新に保たれる
+                        
+                        processedCount++;
+                    }
+
+                    // バッチ処理を実行
+                    await batch.commit();
+                    
+                    // 保存後、最新のデータを読み込んで表示
+                    await loadCastData(currentCastId);
+
+                } catch (error) {
+                    console.error("エラーが発生しました:", error);
+                    displayError(`ファイルの処理中にエラーが発生しました: ${error.message}`);
+                } finally {
+                    loadingIndicator.style.display = 'none';
+                    fileInput.value = ''; // ファイル選択をリセット
+                }
+            };
+            
+            reader.onerror = () => {
+                displayError("ファイルの読み込みに失敗しました。");
+                loadingIndicator.style.display = 'none';
+            };
+
+            reader.readAsText(file, 'UTF-8');
+        }
+        
+
+        // --- データ処理 (Firestoreからロード・分析) ---
+
+        /**
+         * Firestoreからキャストのデータを読み込み、分析・表示する
+         * @param {string} castId 
+         */
+        async function loadCastData(castId) {
+            if (!userId || !db || !castId) return;
+
+            resultsContainer.innerHTML = '';
+            loadingIndicator.style.display = 'block';
+
+            try {
+                // '取引完了'のデータのみをクエリ
+                const q = query(
+                    collection(db, `artifacts/${appId}/users/${userId}/casts/${castId}/orders`),
+                    where("status", "==", "取引完了")
+                );
+                
+                const querySnapshot = await getDocs(q);
+                
+                if (querySnapshot.empty) {
+                    resultsContainer.innerHTML = '<p class="text-center text-gray-500">このキャストには「取引完了」のデータがまだありません。CSVをアップロードしてください。</p>';
+                    loadingIndicator.style.display = 'none';
+                    return;
+                }
+                
+                // Firestoreのドキュメントから分析データを生成
+                const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeDataFromFirestore(querySnapshot.docs);
+                
+                // 結果を表示
+                displayResults(dailyStats, productStats, totalRevenue, totalQuantity);
+                
+            } catch (error) {
+                console.error("データ読み込み・分析エラー:", error);
+                displayError(`データの読み込みまたは分析に失敗しました: ${error.message}`);
+            } finally {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+        
+        /**
+         * Firestoreのドキュメントスナップショットからデータを分析します。
+         * (既存の analyzeData を Firestore 用に改変)
+         */
+        function analyzeDataFromFirestore(docs) {
+            const dailyStats = {};
+            const productStats = {};
+            let totalRevenue = 0;
+            let totalQuantity = 0;
+
+            for (const doc of docs) {
+                const record = doc.data();
+                
+                // データが '取引完了' であることはクエリで保証済み
+                const date = record.orderDate.split(' ')[0];
+                const productName = record.productName;
+                const quantity = record.quantity || 0;
+                const userId = record.userId;
+                const price = record.price || 0;
+                
+                totalRevenue += price;
+                totalQuantity += quantity;
+
+                if (!dailyStats[date]) {
+                    dailyStats[date] = { quantity: 0, revenue: 0, products: {} };
+                }
+                dailyStats[date].quantity += quantity;
+                dailyStats[date].revenue += price;
+                
+                if (!dailyStats[date].products[productName]) {
+                    dailyStats[date].products[productName] = { quantity: 0, revenue: 0 };
+                }
+                dailyStats[date].products[productName].quantity += quantity;
+                dailyStats[date].products[productName].revenue += price;
+                
+                if (!productStats[productName]) {
+                    productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
+                }
+                productStats[productName].quantity += quantity;
+                productStats[productName].revenue += price;
+                productStats[productName].uniqueUsers.add(userId);
+            }
+            
+            globalDailyStats = dailyStats; // ★新規追加: グローバル変数に統計を保存
+            return { dailyStats, productStats, totalRevenue, totalQuantity };
+        }
+        
+        // --- 検索機能 ---
+        
+        /**
+         * 検索入力に基づいて表示結果をフィルタリングします。
+         */
+        function applySearchFilter() {
+            const searchTerm = searchInput.value.toLowerCase();
+            
+            // 検索対象のテーブル行（商品別レポート）
+            const productRows = document.querySelectorAll(
+                '#productStatsTable tbody tr' // <-- 日別アコーディオンを削除
+            );
+            
+            productRows.forEach(row => {
+                // `data-empty` 属性を持つ行（「データがありません」行）は無視
+                if (row.dataset.empty) {
+                    return;
+                }
+
+                const productNameCell = row.querySelector('td:first-child');
+                if (productNameCell) {
+                    const productName = productNameCell.textContent.toLowerCase();
+                    if (productName.includes(searchTerm)) {
+                        row.style.display = '';
+                    } else {
+                        row.style.display = 'none';
+                    }
+                }
+            });
+
+            // ▼▼▼ 追加: モーダルが開いていれば、そちらも検索 ▼▼▼
+            if (!dailyDetailsModal.classList.contains('hidden')) {
+                applySearchFilterToModal();
+            }
+        }
+
+        /**
+         * ▼▼▼ 新規追加: モーダル内の検索を実行する関数 ▼▼▼
+         */
+        function applySearchFilterToModal() {
+            const searchTerm = searchInput.value.toLowerCase();
+            const modalRows = document.querySelectorAll('#modalDateContent tbody tr');
+
+            modalRows.forEach(row => {
+                if (row.dataset.empty) {
+                    return;
+                }
+
+                const productNameCell = row.querySelector('td:first-child');
+                if (productNameCell) {
+                    const productName = productNameCell.textContent.toLowerCase();
+                    if (productName.includes(searchTerm)) {
+                        row.style.display = '';
+                    } else {
+                        row.style.display = 'none';
+                    }
+                }
+            });
+        }
+        
+        // --- 既存の表示・ユーティリティ関数 ---
+
+        // ▼▼▼ 新規追加: モーダル表示/非表示関数 ▼▼▼
+
+        /**
+         * 日別詳細モーダルを表示します。
+         * (グローバルスコープでないと onclick から呼べないため window に登録)
+         * @param {string} date - 表示する日付 (YYYY-MM-DD)
+         */
+        window.showDailyDetailsModal = function(date) {
+            if (!globalDailyStats[date]) {
+                console.error(`No data found for date: ${date}`);
+                return;
+            }
+
+            const stats = globalDailyStats[date];
+            modalDateTitle.textContent = `${date} の商品別レポート`;
+            
+            // 以前の createDailyProductStatsTable のロジックをここで使用
+            const products = stats.products;
+            const sortedProducts = Object.entries(products).sort(([,a], [,b]) => b.quantity - a.quantity);
+            
+            let productRows = sortedProducts.map(([name, stats]) => `
+                <tr class="border-t border-gray-200">
+                    <td class="p-3 text-sm text-gray-600">${name}</td>
+                    <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
+                    <td class="p-3 text-right text-green-600">${stats.revenue.toLocaleString()}円</td>
+                </tr>
+            `).join('');
+
+            if (!productRows) {
+                productRows = '<tr data-empty="true"><td colspan="3" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+            }
+
+            modalDateContent.innerHTML = `
+                <table class="w-full text-sm">
+                    <thead class="border-b">
+                        <tr>
+                            <th class="pb-2 text-left font-semibold text-gray-600">商品名</th>
+                            <th class="pb-2 text-right font-semibold text-gray-600">販売個数</th>
+                            <th class="pb-2 text-right font-semibold text-gray-600">売上</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${productRows}
+                    </tbody>
+                </table>
+            `;
+
+            // モーダル表示時に検索フィルタを適用
+            applySearchFilterToModal();
+            // モーダルを表示
+            dailyDetailsModal.classList.remove('hidden');
+        }
+
+        /**
+         * 日別詳細モーダルを非表示にします。
+         * (グローバルスコープでないと onclick から呼べないため window に登録)
+         */
+        window.hideDailyDetailsModal = function() {
+            dailyDetailsModal.classList.add('hidden');
+            modalDateTitle.textContent = '';
+            modalDateContent.innerHTML = '';
+        }
+
+        // ▲▲▲ 新規追加: モーダル表示/非表示関数 ▲▲▲
+        
+        /**
+         * アコーディオンの開閉を制御します。
+         * (グローバルスコープでないと onclick から呼べないため window に登録)
+         */
+        window.toggleAccordion = function(element) {
+            const content = element.nextElementSibling;
+            const icon = element.querySelector('svg');
+            content.classList.toggle('hidden');
+            icon.classList.toggle('rotate-180');
+        }
+
+        /**
+         * CSV文字列をパースしてヘッダーとデータ記録に分割します。
+         * FantiaのCSV形式（3行目ヘッダー、4行目データ開始）に対応
+         */
+        function parseCSV(csvText) {
+            const lines = csvText.replace(/\r/g, '').trim().split('\n');
+            if (lines.length < 4) {
+                 throw new Error("CSVデータが不十分です。ヘッダーとデータ行が必要です。");
+            }
+            
+            // 3行目をヘッダーとして取得 (0-indexed)
+            const headerLine = lines[2];
+            // 4行目以降をデータとして取得
+            const dataLines = lines.slice(3);
+
+            const parseLine = (line) => {
+                const result = [];
+                let field = '';
+                let inQuotes = false;
+                
+                for (let i = 0; i < line.length; i++) {
+                    const char = line[i];
+
+                    if (char === '"') {
+                        if (inQuotes && line[i + 1] === '"') {
+                            field += '"';
+                            i++; 
+                        } else {
+                            inQuotes = !inQuotes;
+                        }
+                    } else if (char === ',' && !inQuotes) {
+                        result.push(field.trim()); // trim() を追加して前後の空白を除去
+                        field = '';
+                    } else {
+                        field += char;
+                    }
+                }
+                result.push(field.trim()); // 最後のフィールドも trim()
+                return result;
+            };
+
+            const header = parseLine(headerLine);
+            const records = dataLines.filter(line => line.trim() !== '').map(line => parseLine(line));
+            
+            return { header, records };
+        }
+
+        /**
+         * 分析結果をHTMLとして画面に表示します。
+         */
+        function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
+            resultsContainer.innerHTML = `
                 ${createSummaryCard(totalRevenue, totalQuantity, productStats)}
-                ${createDailyProductStatsTable(dailyStats)}
+                
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     ${createProductStatsTable(productStats)}
                     ${createDailyStatsTable(dailyStats)}
                 </div>
             `;
-    }
+            
+            // 表示が完了した後に現在の検索フィルターを適用
+            applySearchFilter();
+        }
+        
+        /**
+         * エラーメッセージを表示します。
+         */
+        function displayError(message) {
+            // エラーメッセージは結果コンテナの *先頭* に追加する（既存の結果を消さない）
+            const errorElement = document.createElement('div');
+            errorElement.className = "max-w-2xl mx-auto bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg mb-4";
+            errorElement.setAttribute('role', 'alert');
+            errorElement.innerHTML = `
+                <p class="font-bold">エラー</p>
+                <p>${message}</p>
+            `;
+            resultsContainer.prepend(errorElement);
+        }
 
-    function createSummaryCard(totalRevenue, totalQuantity, productStats) {
-      const uniqueProductCount = Object.keys(productStats).length;
-      return `
+        // --- HTML生成関数群 ---
+
+        function createSummaryCard(totalRevenue, totalQuantity, productStats) {
+            const uniqueProductCount = Object.keys(productStats).length;
+            return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 mb-8">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">全体サマリー</h2>
                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
@@ -350,14 +923,14 @@
                 </div>
             </div>
             `;
-    }
-
-    function createProductStatsTable(productStats) {
-      const sortedProducts = Object.entries(productStats).sort(([, a], [, b]) => b.revenue - a.revenue);
-
-      let tableRows = sortedProducts.map(([name, stats]) => {
-        const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
-        return `
+        }
+        
+        function createProductStatsTable(productStats) {
+            const sortedProducts = Object.entries(productStats).sort(([,a], [,b]) => b.revenue - a.revenue);
+            
+            let tableRows = sortedProducts.map(([name, stats]) => {
+                const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
+                return `
                     <tr class="border-b border-gray-200 hover:bg-gray-50">
                         <td class="p-3 text-sm text-gray-700">${name}</td>
                         <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
@@ -366,17 +939,18 @@
                         <td class="p-3 text-right font-semibold text-green-600">${stats.revenue.toLocaleString()}円</td>
                     </tr>
                 `;
-      }).join('');
+            }).join('');
+            
+            if (!tableRows) {
+                tableRows = '<tr data-empty="true"><td colspan="5" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+            }
 
-      if (!tableRows) {
-        tableRows = '<tr><td colspan="5" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
-      }
-
-      return `
+            return `
                 <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                     <h2 class="text-xl font-bold text-gray-800 mb-4">商品別レポート</h2>
                     <div class="overflow-x-auto">
-                        <table class="w-full">
+                        <!-- 検索用にIDを付与 -->
+                        <table class="w-full" id="productStatsTable">
                             <thead class="bg-gray-50">
                                 <tr>
                                     <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">商品名</th>
@@ -391,24 +965,26 @@
                     </div>
                 </div>
             `;
-    }
+        }
 
-    function createDailyStatsTable(dailyStats) {
-      const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
-
-      let tableRows = sortedDates.map(date => `
-                <tr class="border-b border-gray-200 hover:bg-gray-50">
+        function createDailyStatsTable(dailyStats) {
+            const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
+            
+            let tableRows = sortedDates.map(date => `
+                <!-- ▼▼▼ 変更: onclickイベントとカーソルスタイルを追加 ▼▼▼ -->
+                <tr class="border-b border-gray-200 hover:bg-blue-50 cursor-pointer" onclick="showDailyDetailsModal('${date}')">
                     <td class="p-3 text-sm text-gray-700">${date}</td>
                     <td class="p-3 text-right font-medium">${dailyStats[date].quantity.toLocaleString()}</td>
                     <td class="p-3 text-right font-semibold text-green-600">${dailyStats[date].revenue.toLocaleString()}円</td>
                 </tr>
+                <!-- ▲▲▲ 変更 ▲▲▲ -->
             `).join('');
 
-      if (!tableRows) {
-        tableRows = '<tr><td colspan="3" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
-      }
+            if (!tableRows) {
+                tableRows = '<tr data-empty="true"><td colspan="3" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+            }
 
-      return `
+            return `
                 <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                     <h2 class="text-xl font-bold text-gray-800 mb-4">日別レポート</h2>
                     <div class="overflow-x-auto">
@@ -425,71 +1001,17 @@
                     </div>
                 </div>
             `;
-    }
+        }
 
-    function createDailyProductStatsTable(dailyStats) {
-      const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
-
-      if (sortedDates.length === 0) {
-        return '';
-      }
-
-      const accordionItems = sortedDates.map(date => {
-        const products = dailyStats[date].products;
-        const sortedProducts = Object.entries(products).sort(([, a], [, b]) => b.quantity - a.quantity);
-
-        const productRows = sortedProducts.map(([name, stats]) => `
-                    <tr class="border-t border-gray-200">
-                        <td class="p-3 text-sm text-gray-600">${name}</td>
-                        <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
-                        <td class="p-3 text-right text-green-600">${stats.revenue.toLocaleString()}円</td>
-                    </tr>
-                `).join('');
-
-        return `
-                    <div class="border-b border-gray-200 last:border-b-0">
-                        <button class="w-full flex justify-between items-center p-4 text-left font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none" onclick="toggleAccordion(this)">
-                            <span>${date}</span>
-                            <svg class="w-5 h-5 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                        </button>
-                        <div class="hidden p-4 bg-gray-50">
-                            <table class="w-full text-sm">
-                                <thead class="border-b">
-                                    <tr>
-                                        <th class="pb-2 text-left font-semibold text-gray-600">商品名</th>
-                                        <th class="pb-2 text-right font-semibold text-gray-600">販売個数</th>
-                                        <th class="pb-2 text-right font-semibold text-gray-600">売上</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${productRows}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                `;
-      }).join('');
-
-      return `
-                <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-                    <h2 class="text-xl font-bold text-gray-800 mb-4">日別・商品別レポート</h2>
-                    <div class="border border-gray-200 rounded-lg overflow-hidden">
-                        ${accordionItems}
-                    </div>
-                </div>
-            `;
-    }
+        /* ▼▼▼ 削除: この関数は不要になりました ▼▼▼
+        function createDailyProductStatsTable(dailyStats) {
+            // ... (全削除) ...
+        }
+        */ // (実際には関数全体を削除してください)
 
 
-    function displayError(message) {
-      resultsContainer.innerHTML = `
-                <div class="max-w-2xl mx-auto bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg" role="alert">
-                    <p class="font-bold">エラー</p>
-                    <p>${message}</p>
-                </div>
-            `;
-    }
-  </script>
+    </script>
 
 </body>
 </html>
+
