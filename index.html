@@ -196,7 +196,7 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- グローバル変数・定数 ---
-        let db, auth, userId, appId, correctPasswordHash;
+        let db, auth, userId, appId, correctPasswordHash; // correctPasswordHash は平文パスワードを保持する変数名として流用
         let globalDailyStats = {}; // 日別データをグローバルに保持
 
         // --- DOM要素 ---
@@ -206,20 +206,6 @@
             castError, castLoadingMessage, uploadSection, fileInput, searchSection, 
             searchInput, loadingIndicator, resultsContainer, 
             dailyDetailsModal, modalTitle, modalBody;
-
-        // --- 認証関連 (ハッシュ化) ---
-        /**
-         * 文字列を SHA-256 ハッシュ値に変換します。
-         * @param {string} message - ハッシュ化する文字列
-         * @returns {Promise<string>} 16進数文字列のハッシュ値
-         */
-        async function sha256(message) {
-            const msgBuffer = new TextEncoder().encode(message);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            return hashHex;
-        }
 
         /**
          * Cookieを設定します。
@@ -340,17 +326,19 @@
                         userId = user.uid;
                         console.log("Firebase 匿名認証成功. UserID:", userId);
 
-                        // 6. DBからパスワードハッシュを取得
+                        // 6. DBからパスワード（平文）を取得
                         try {
                             const passDocRef = doc(db, `artifacts/${appId}/public/data/config/password`);
                             const passDocSnap = await getDoc(passDocRef);
                             
                             if (passDocSnap.exists()) {
-                                correctPasswordHash = passDocSnap.data().hash;
-                                console.log("パスワードハッシュの取得成功。");
+                                // データベースに保存されている平文のパスワードを取得
+                                // フィールド名が 'hash' のままでも中身が平文ならOK
+                                correctPasswordHash = passDocSnap.data().hash; 
+                                console.log("パスワードの取得成功。");
                                 
                                 // 7. パスワード認証処理
-                                // 認証済みかCookieでチェック
+                                // 認証済みかCookieでチェック（Cookieの値も平文パスワード）
                                 if (getCookie('auth_token_lottery_analyzer') === correctPasswordHash) {
                                     showMainContentAndInitApp();
                                     loadCasts(); // メインアプリのキャスト読み込み開始
@@ -365,7 +353,7 @@
                                 passwordLoadingMessage.classList.add('text-red-500');
                             }
                         } catch (err) {
-                            console.error("パスワードハッシュの取得に失敗:", err);
+                            console.error("パスワードの取得に失敗:", err);
                             passwordLoadingMessage.textContent = 'エラー: DB接続に失敗しました。';
                             passwordLoadingMessage.classList.add('text-red-500');
                         }
@@ -400,16 +388,16 @@
                 loginButtonSpinner.classList.remove('hidden');
 
                 const inputPassword = passwordInput.value;
-                const inputHash = await sha256(inputPassword);
+                // ハッシュ化の処理を削除
 
                 // デバッグ用ログ
                 console.log("入力されたパスワード:", inputPassword);
-                console.log("計算されたハッシュ:", inputHash);
-                console.log("期待されるハッシュ:", correctPasswordHash);
+                console.log("期待されるパスワード:", correctPasswordHash);
 
-                if (inputHash === correctPasswordHash) {
+                // 平文のまま比較
+                if (inputPassword === correctPasswordHash) {
                     // 認証成功
-                    setCookie('auth_token_lottery_analyzer', inputHash, 10);
+                    setCookie('auth_token_lottery_analyzer', inputPassword, 10); // Cookieにも平文を保存
                     showMainContentAndInitApp();
                     loadCasts(); // メインアプリのキャスト読み込み開始
                 } else {
@@ -425,7 +413,7 @@
             // パスワード入力欄で入力を開始したらエラーメッセージを消す
             passwordInput.addEventListener('input', () => {
                 errorMessage.classList.add('hidden');
-G           });
+            });
             
             // 「パスワードを表示する」チェックボックスの処理
             if (showPasswordToggle) {
