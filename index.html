@@ -239,7 +239,7 @@
         import { 
             getAuth, 
             signInAnonymously, 
-            signInWithCustomToken, // Canvas環境では不要だが、GitHub版では削除
+            // signInWithCustomToken, // GitHub版では使用しない
             onAuthStateChanged
             // setLogLevel を auth から削除
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -259,7 +259,7 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- グローバル変数 ---
-        let db, auth, userId, appId;
+        let db, auth, userId, appId; // userId は認証にのみ使用
         let currentCastId = null; // 現在選択中のキャストID
         let allCasts = []; // キャスト一覧
         let globalDailyStats = {}; // ★新規追加: 日別統計をグローバルに保持
@@ -288,20 +288,20 @@
             try {
                 // ▼▼▼ 変更: ここにFirebaseプロジェクトの設定を貼り付け ▼▼▼
                 // (ステップ1.4でコピーした const firebaseConfig = { ... } を貼り付けます)
-              const firebaseConfig = {
-                apiKey: "AIzaSyDDz9cs9Wgx8Npjrh7FwUB4kF1h8Zwsiik",
-                authDomain: "fantia-csv.firebaseapp.com",
-                projectId: "fantia-csv",
-                storageBucket: "fantia-csv.firebasestorage.app",
-                messagingSenderId: "457081920405",
-                appId: "1:457081920405:web:6a33cb7f82e1ff7739f49c",
-                measurementId: "G-W1XS2E6VZ9"
-              };
+                const firebaseConfig = {
+                                apiKey: “AIzaSyDDz9cs9Wgx8Npjrh7FwUB4kF1h8Zwsiik”,
+                                authDomain: “fantia-csv.firebaseapp.com”,
+                                projectId: “fantia-csv”,
+                                storageBucket: “fantia-csv.firebasestorage.app”,
+                                messagingSenderId: “457081920405”,
+                                appId: “1:457081920405:web:6a33cb7f82e1ff7739f49c”,
+                                measurementId: “G-W1XS2E6VZ9”
+                              };
                 // ▲▲▲ 変更 ▲▲▲
 
                 
                 // ▼▼▼ 変更: appIdを固定の文字列に設定 ▼▼▼
-                // (ステップ1.3のセキュリティルール /artifacts/ここの文字列/users/... と一致させる)
+                // (ステップ1.3のセキュリティルール /artifacts/ここの文字列/... と一致させる)
                 appId = 'fantia-analyzer-app'; 
 
 
@@ -321,7 +321,7 @@
                 // 認証状態の監視
                 onAuthStateChanged(auth, async (user) => {
                     if (user) {
-                        userId = user.uid;
+                        userId = user.uid; // userIdは認証状態の確認にのみ使用
                         // 認証が確認できたら各種イベントリスナーを設定
                         setupEventListeners();
                         // キャスト情報を読み込む
@@ -382,9 +382,10 @@
          * Firestoreからキャスト一覧を読み込み、ドロップダウンを更新
          */
         async function loadCasts() {
-            if (!userId || !db) return;
+            if (!userId || !db) return; // 認証済みかどうかのチェックは残す
             
-            const castsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/casts`);
+            // ▼▼▼ 変更: パスから /users/${userId} を削除し、共有の場所を参照 ▼▼▼
+            const castsCollectionRef = collection(db, `artifacts/${appId}/public/data/casts`);
             
             try {
                 // リアルタイム更新をリッスン
@@ -440,7 +441,7 @@
                 castError.classList.remove('hidden');
                 return;
             }
-            if (!userId || !db) {
+            if (!userId || !db) { // 認証済みかのチェックは残す
                 // displayError("データベースに接続されていません。"); // <-- これを削除
                 castError.textContent = "データベースに接続されていません。";
                 castError.classList.remove('hidden');
@@ -448,7 +449,8 @@
             }
 
             try {
-                const castsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/casts`);
+                // ▼▼▼ 変更: パスから /users/${userId} を削除し、共有の場所を参照 ▼▼▼
+                const castsCollectionRef = collection(db, `artifacts/${appId}/public/data/casts`);
                 await addDoc(castsCollectionRef, { name: castName });
                 newCastNameInput.value = ''; // 入力欄をクリア
                 // onSnapshotが自動でドロップダウンを更新する
@@ -504,8 +506,10 @@
                     }
                     
                     // バッチ処理の準備
+                    // ▼▼▼ 変更: パスから /users/${userId} を削除し、共有の場所を参照 ▼▼▼
+                    const ordersCollectionRef = collection(db, `artifacts/${appId}/public/data/casts/${currentCastId}/orders`);
+                    
                     const batch = writeBatch(db);
-                    const ordersCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/casts/${currentCastId}/orders`);
                     
                     let processedCount = 0;
                     
@@ -602,15 +606,15 @@
          * @param {string} castId 
          */
         async function loadCastData(castId) {
-            if (!userId || !db || !castId) return;
+            if (!userId || !db || !castId) return; // 認証済みかのチェックは残す
 
             resultsContainer.innerHTML = '';
             loadingIndicator.style.display = 'block';
 
             try {
-                // '取引完了'のデータのみをクエリ
+                // ▼▼▼ 変更: パスから /users/${userId} を削除し、共有の場所を参照 ▼▼▼
                 const q = query(
-                    collection(db, `artifacts/${appId}/users/${userId}/casts/${castId}/orders`),
+                    collection(db, `artifacts/${appId}/public/data/casts/${castId}/orders`),
                     where("status", "==", "取引完了")
                 );
                 
