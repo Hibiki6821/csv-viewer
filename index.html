@@ -103,6 +103,24 @@
                         </div>
                     </div>
 
+                    <!-- 期間指定レポート -->
+                    <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">期間指定レポート</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label for="rangeStartDate" class="block text-sm font-medium text-gray-700 mb-2">開始日</label>
+                                <input type="date" id="rangeStartDate" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
+                            </div>
+                            <div>
+                                <label for="rangeEndDate" class="block text-sm font-medium text-gray-700 mb-2">終了日</label>
+                                <input type="date" id="rangeEndDate" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
+                            </div>
+                            <button id="rangeSummaryButton" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                                この期間で集計
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- ファイルアップロード -->
                     <div id="upload-section" class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 hidden">
                         <h2 class="text-xl font-bold text-gray-800 mb-4">データ更新</h2>
@@ -169,6 +187,23 @@
         </div>
     </div>
 
+    <!-- 期間指定集計モーダル -->
+    <div id="rangeSummaryModal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 opacity-0 pointer-events-none">
+        <div class="modal-content bg-white rounded-xl shadow-lg w-full max-w-3xl m-4 transform scale-95">
+            <!-- モーダルヘッダー -->
+            <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                <h3 id="rangeModalTitle" class="text-xl font-bold text-gray-800">期間集計レポート</h3>
+                <button onclick="hideRangeSummaryModal()" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <!-- モーダルボディ -->
+            <div id="rangeModalBody" class="p-6 max-h-[70vh] overflow-y-auto">
+                <!-- 集計結果がここに挿入されます -->
+            </div>
+        </div>
+    </div>
+
 
     <!-- 
         Firebase と アプリケーションロジック
@@ -205,11 +240,13 @@
             passwordLoadingMessage, castSelector, newCastNameInput, addCastButton, 
             castError, castLoadingMessage, uploadSection, fileInput, searchSection, 
             searchInput, loadingIndicator, resultsContainer, 
-            dailyDetailsModal, modalTitle, modalBody;
-
-        /**
-         * Cookieを設定します。
-         */
+           dailyDetailsModal, modalTitle, modalBody,
+           rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
+           rangeSummaryModal, rangeModalTitle, rangeModalBody;
+ 
+         /**
+          * Cookieを設定します。
+          */
         function setCookie(name, value, years) {
             let expires = "";
             if (years) {
@@ -286,9 +323,15 @@
             dailyDetailsModal = document.getElementById('dailyDetailsModal');
             modalTitle = document.getElementById('modalTitle');
             modalBody = document.getElementById('modalBody');
-
-            // 2. Firebase設定
-            try {
+            rangeStartDateInput = document.getElementById('rangeStartDate');
+            rangeEndDateInput = document.getElementById('rangeEndDate');
+            rangeSummaryButton = document.getElementById('rangeSummaryButton');
+            rangeSummaryModal = document.getElementById('rangeSummaryModal');
+            rangeModalTitle = document.getElementById('rangeModalTitle');
+            rangeModalBody = document.getElementById('rangeModalBody');
+ 
+             // 2. Firebase設定
+             try {
                 // ▼▼▼ 変更: ここにFirebaseプロジェクトの設定を貼り付け ▼▼▼
                 // (ステップ1.4でコピーした const firebaseConfig = { ... } を貼り付けます)
                 
@@ -437,9 +480,13 @@
                     uploadSection.classList.add('hidden');
                     resultsContainer.innerHTML = '';
                     searchSection.classList.add('hidden');
+                    // キャストが選択解除されたら日付入力も無効化
+                    rangeStartDateInput.disabled = true;
+                    rangeEndDateInput.disabled = true;
+                    rangeSummaryButton.disabled = true;
                 }
             });
-
+ 
             // キャスト追加ボタン
             addCastButton.addEventListener('click', handleAddCast);
             
@@ -455,8 +502,11 @@
             
             // 検索入力
             searchInput.addEventListener('input', applySearchFilter);
+            
+            // 期間集計ボタン
+            rangeSummaryButton.addEventListener('click', handleRangeSummary);
         }
-
+ 
         /**
          * キャスト管理UIを有効化します。
          */
@@ -465,8 +515,13 @@
             newCastNameInput.disabled = false;
             addCastButton.disabled = false;
             castLoadingMessage.classList.add('hidden');
+            
+            // キャストが読み込めたら日付選択も有効化
+            rangeStartDateInput.disabled = false;
+            rangeEndDateInput.disabled = false;
+            rangeSummaryButton.disabled = false;
         }
-
+ 
         /**
          * Firestoreからキャスト一覧を読み込みます。
          */
@@ -965,6 +1020,109 @@
         }
         
         /**
+         * 期間指定レポートの集計処理
+         */
+        function handleRangeSummary() {
+            const startDateStr = rangeStartDateInput.value;
+            const endDateStr = rangeEndDateInput.value;
+
+            if (!startDateStr || !endDateStr) {
+                alert("開始日と終了日を両方選択してください。"); // このalertは許容範囲
+                return;
+            }
+
+            const startDate = new Date(startDateStr);
+            const endDate = new Date(endDateStr);
+
+            if (startDate > endDate) {
+                alert("終了日は開始日より後の日付を選択してください。");
+                return;
+            }
+            
+            // 終了日の時刻を 23:59:59 に設定して、その日全体が含まれるようにする
+            endDate.setHours(23, 59, 59, 999);
+
+            console.log(`期間集計: ${startDateStr} から ${endDateStr} まで`);
+
+            // globalDailyStats から該当期間のデータを抽出して集計
+            const rangeProductStats = {};
+            let rangeTotalRevenue = 0;
+            let rangeTotalQuantity = 0;
+            let rangeUniqueUsers = new Set(); // 期間内のユニークユーザー
+
+            for (const [dateStr, dailyData] of Object.entries(globalDailyStats)) {
+                const currentDate = new Date(dateStr);
+                if (currentDate >= startDate && currentDate <= endDate) {
+                    // 期間内の総売上・総個数を加算
+                    rangeTotalRevenue += dailyData.revenue;
+                    rangeTotalQuantity += dailyData.quantity;
+
+                    // 商品別データをマージ
+                    for (const [productName, productData] of Object.entries(dailyData.products)) {
+                        if (!rangeProductStats[productName]) {
+                            rangeProductStats[productName] = { quantity: 0, revenue: 0 };
+                        }
+                        rangeProductStats[productName].quantity += productData.quantity;
+                        rangeProductStats[productName].revenue += productData.revenue;
+                    }
+                }
+            }
+            
+            // 期間内の購入者数を計算 (元のデータに購入者情報がないため、この実装では商品別レポートから取得は難しい)
+            // このデモでは、期間内の商品別集計と総合計を表示する
+            
+            // モーダルタイトル設定
+            rangeModalTitle.textContent = `集計レポート (${startDateStr} 〜 ${endDateStr})`;
+            
+            // モーダル内容（サマリー）
+            let modalHTML = `
+             <div class="bg-blue-50 rounded-lg p-4 mb-6">
+                 <h3 class="text-lg font-bold text-gray-800 mb-3">期間サマリー</h3>
+                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-center">
+                     <div>
+                         <p class="text-sm text-gray-500">期間売上金額</p>
+                         <p class="text-2xl font-semibold text-blue-600">${rangeTotalRevenue.toLocaleString()}円</p>
+                     </div>
+                     <div>
+                         <p class="text-sm text-gray-500">期間販売個数</p>
+                         <p class="text-2xl font-semibold text-blue-600">${rangeTotalQuantity.toLocaleString()}個</p>
+                     </div>
+                 </div>
+             </div>
+            `;
+
+            // モーダル内容（商品別テーブル）
+            const sortedProducts = Object.entries(rangeProductStats).sort(([,a], [,b]) => b.revenue - a.revenue);
+            
+            const productRows = sortedProducts.map(([name, stats]) => `
+                 <tr class="border-t border-gray-200" data-search-name="${name.toLowerCase()}">
+                     <td class="p-3 text-sm text-gray-600">${name}</td>
+                     <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
+                     <td class="p-3 text-right text-green-600">${stats.revenue.toLocaleString()}円</td>
+                 </tr>
+             `).join('');
+
+            modalHTML += `
+                 <h3 class="text-lg font-bold text-gray-800 mb-3">期間中の商品別売上</h3>
+                 <table id="modalRangeProductStatsTable" class="w-full text-sm">
+                     <thead class="border-b">
+                         <tr>
+                             <th class="pb-2 text-left font-semibold text-gray-600">商品名</th>
+                             <th class="pb-2 text-right font-semibold text-gray-600">販売個数</th>
+                             <th class="pb-2 text-right font-semibold text-gray-600">売上</th>
+                         </tr>
+                     </thead>
+                     <tbody>
+                         ${productRows.length > 0 ? productRows : '<tr><td colspan="3" class="text-center p-4 text-gray-500">該当期間にデータはありません。</td></tr>'}
+                     </tbody>
+                 </table>
+            `;
+            
+            rangeModalBody.innerHTML = modalHTML;
+            showRangeSummaryModal();
+        }
+
+        /**
          * 検索フィルターを適用します。
          */
         function applySearchFilter() {
@@ -990,6 +1148,22 @@
             const modalTable = document.getElementById('modalProductStatsTable');
             if (modalTable && !dailyDetailsModal.classList.contains('opacity-0')) {
                 const modalRows = modalTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+                for (const row of modalRows) {
+                    const name = row.dataset.searchName;
+                    if (name) {
+                        if (name.includes(query)) {
+                            row.style.display = '';
+                        } else {
+                            row.style.display = 'none';
+                        }
+                    }
+                }
+            }
+
+            // (もし期間集計モーダルが開いていれば) モーダル内のフィルタリング
+            const rangeModalTable = document.getElementById('modalRangeProductStatsTable');
+            if (rangeModalTable && !rangeSummaryModal.classList.contains('opacity-0')) {
+                const modalRows = rangeModalTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
                 for (const row of modalRows) {
                     const name = row.dataset.searchName;
                     if (name) {
@@ -1058,8 +1232,27 @@
             dailyDetailsModal.firstElementChild.classList.add('scale-95');
         }
 
-        // --- アプリケーションの起動 ---
-        // DOMが読み込まれたらFirebaseの初期化を開始
+        /**
+         * 期間集計モーダルを表示します。
+         */
+        window.showRangeSummaryModal = () => {
+            rangeSummaryModal.classList.remove('opacity-0', 'pointer-events-none');
+            rangeSummaryModal.firstElementChild.classList.remove('scale-95');
+            // 現在の検索フィルターをモーダルにも適用
+            applySearchFilter();
+        }
+
+        /**
+         * 期間集計モーダルを非表示にします。
+         */
+        window.hideRangeSummaryModal = () => {
+            rangeSummaryModal.classList.add('opacity-0', 'pointer-events-none');
+            rangeSummaryModal.firstElementChild.classList.add('scale-95');
+        }
+
+        /**
+         * アプリケーションの起動 ---
+         // DOMが読み込まれたらFirebaseの初期化を開始
         document.addEventListener('DOMContentLoaded', initializeMainApp);
 
     </script>
