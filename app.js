@@ -418,15 +418,37 @@ async function calculateProductStatsForPeriod(companyGroupId, castId, filteredSt
   const snapshot = await getDocs(ordersColRef);
 
   const productStats = {};
-  const filteredDates = Object.keys(filteredStats);
+
+  // 期間の開始日と終了日を計算
+  const now = new Date();
+  let startDate, endDate;
+
+  switch (currentSummaryPeriod) {
+    case 'monthly':
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      endDate = now;
+      break;
+    case 'weekly':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      endDate = now;
+      break;
+    case 'all':
+    default:
+      startDate = new Date('2020-01-01'); // 十分古い日付
+      endDate = new Date('2030-12-31'); // 十分新しい日付
+      break;
+  }
+
+  console.log(`期間フィルタリング: ${startDate.toISOString().split('T')[0]} から ${endDate.toISOString().split('T')[0]} まで`);
+  console.log('注文データ数:', snapshot.size);
 
   snapshot.forEach(doc => {
     const orderData = doc.data();
     if (orderData.status === '取引完了') {
-      const orderDate = orderData.orderDate.split(' ')[0]; // YYYY-MM-DD 形式
+      const orderDate = new Date(orderData.orderDate.split(' ')[0]); // YYYY-MM-DD 形式
 
-      // フィルタリングされた期間内のデータのみを処理
-      if (filteredDates.includes(orderDate)) {
+      // 期間内のデータのみを処理
+      if (orderDate >= startDate && orderDate <= endDate) {
         const productName = orderData.productName;
         const quantity = orderData.quantity || 0;
         const revenue = orderData.price || 0;
@@ -439,9 +461,16 @@ async function calculateProductStatsForPeriod(companyGroupId, castId, filteredSt
         productStats[productName].quantity += quantity;
         productStats[productName].revenue += revenue;
         productStats[productName].uniqueUsers.add(userId);
+
+        console.log(`商品: ${productName}, ユーザー: ${userId}, 数量: ${quantity}, 日付: ${orderData.orderDate.split(' ')[0]}`);
       }
     }
   });
+
+  // デバッグ用ログ
+  for (const [productName, stats] of Object.entries(productStats)) {
+    console.log(`商品: ${productName}, 購入者数: ${stats.uniqueUsers.size}, 数量: ${stats.quantity}`);
+  }
 
   return productStats;
 }
@@ -525,6 +554,7 @@ function filterStatsByPeriod(dailyStats, period) {
     }
   }
 
+  console.log(`期間フィルタリング結果 (${period}):`, Object.keys(filteredStats));
   return filteredStats;
 }
 
