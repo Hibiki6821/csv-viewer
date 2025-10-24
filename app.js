@@ -380,16 +380,25 @@ function handleSummaryPeriodChange(period) {
  */
 function updateSummaryDisplay() {
   const filteredStats = filterStatsByPeriod(globalDailyStats, currentSummaryPeriod);
-  const { productStats, totalRevenue, totalQuantity } = analyzeDataFromFirestore(
-    Object.values(filteredStats).flatMap(day =>
-      Object.entries(day.products || {}).map(([productName, productData]) => ({
-        productName,
-        quantity: productData.quantity,
-        revenue: productData.revenue,
-        status: '取引完了'
-      }))
-    )
-  );
+
+  // フィルタリングされたデータから統計を計算
+  const productStats = {};
+  let totalRevenue = 0;
+  let totalQuantity = 0;
+
+  for (const [dateStr, dayData] of Object.entries(filteredStats)) {
+    totalRevenue += dayData.revenue || 0;
+    totalQuantity += dayData.quantity || 0;
+
+    // 商品別統計を集計
+    for (const [productName, productData] of Object.entries(dayData.products || {})) {
+      if (!productStats[productName]) {
+        productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
+      }
+      productStats[productName].quantity += productData.quantity || 0;
+      productStats[productName].revenue += productData.revenue || 0;
+    }
+  }
 
   // サマリーカードを更新
   const summaryCard = document.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
