@@ -381,41 +381,94 @@ function handleSummaryPeriodChange(period) {
 function updateSummaryDisplay() {
   const filteredStats = filterStatsByPeriod(globalDailyStats, currentSummaryPeriod);
 
-  // フィルタリングされたデータから統計を計算
+  // 元の注文データから期間内のユニークユーザー情報を取得
+  const companyGroupId = companyGroupSelector.value;
+  const castId = castSelector.value;
+
+  if (companyGroupId && castId) {
+    calculateProductStatsForPeriod(companyGroupId, castId, filteredStats)
+      .then(productStats => {
+        const totalRevenue = Object.values(productStats).reduce((sum, stats) => sum + stats.revenue, 0);
+        const totalQuantity = Object.values(productStats).reduce((sum, stats) => sum + stats.quantity, 0);
+
+        // サマリーカードを更新
+        const summaryCard = resultsContainer.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
+        if (summaryCard) {
+          summaryCard.innerHTML = createSummaryCardHTML(totalRevenue, totalQuantity, productStats, currentSummaryPeriod);
+        }
+
+        // 商品別レポートと日別レポートも更新
+        updateProductAndDailyReports(filteredStats, productStats);
+      })
+      .catch(error => {
+        console.error('商品統計計算エラー:', error);
+        // エラー時は簡易計算で表示
+        updateSummaryDisplayFallback(filteredStats);
+      });
+  } else {
+    updateSummaryDisplayFallback(filteredStats);
+  }
+}
+
+/**
+ * 期間内の商品統計を計算します。
+ */
+async function calculateProductStatsForPeriod(companyGroupId, castId, filteredStats) {
+  const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
+  const snapshot = await getDocs(ordersColRef);
+
+  const productStats = {};
+  const filteredDates = Object.keys(filteredStats);
+
+  snapshot.forEach(doc => {
+    const orderData = doc.data();
+    if (orderData.status === '取引完了') {
+      const orderDate = orderData.orderDate.split(' ')[0]; // YYYY-MM-DD 形式
+
+      // フィルタリングされた期間内のデータのみを処理
+      if (filteredDates.includes(orderDate)) {
+        const productName = orderData.productName;
+        const quantity = orderData.quantity || 0;
+        const revenue = orderData.price || 0;
+        const userId = orderData.userId;
+
+        if (!productStats[productName]) {
+          productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
+        }
+
+        productStats[productName].quantity += quantity;
+        productStats[productName].revenue += revenue;
+        productStats[productName].uniqueUsers.add(userId);
+      }
+    }
+  });
+
+  return productStats;
+}
+
+/**
+ * フォールバック用のサマリー表示更新（エラー時）
+ */
+function updateSummaryDisplayFallback(filteredStats) {
   const productStats = {};
   let totalRevenue = 0;
   let totalQuantity = 0;
-  let totalUniqueUsers = new Set();
 
   for (const [dateStr, dayData] of Object.entries(filteredStats)) {
     totalRevenue += dayData.revenue || 0;
     totalQuantity += dayData.quantity || 0;
 
-    // 商品別統計を集計
+    // 商品別統計を集計（ユニークユーザー情報なし）
     for (const [productName, productData] of Object.entries(dayData.products || {})) {
       if (!productStats[productName]) {
         productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
       }
       productStats[productName].quantity += productData.quantity || 0;
       productStats[productName].revenue += productData.revenue || 0;
-
-      // ユニークユーザーを集計（実際のデータから取得する必要がある）
-      // 現在の実装では、元のデータからユーザー情報を取得できないため、
-      // 商品別レポートの購入者数から推定
     }
   }
 
-  // 商品別統計から総ユニークユーザー数を推定
-  for (const [productName, stats] of Object.entries(productStats)) {
-    // 各商品の購入者数を総ユニークユーザー数に加算
-    // 実際の実装では、重複を除く必要があるが、現在のデータ構造では困難
-    // 暫定的に商品別の購入者数の合計を使用
-    for (let i = 0; i < stats.uniqueUsers.size; i++) {
-      totalUniqueUsers.add(`${productName}_${i}`);
-    }
-  }
-
-  // サマリーカードを更新（resultsContainer内の最初の要素を更新）
+  // サマリーカードを更新
   const summaryCard = resultsContainer.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
   if (summaryCard) {
     summaryCard.innerHTML = createSummaryCardHTML(totalRevenue, totalQuantity, productStats, currentSummaryPeriod);
@@ -429,16 +482,13 @@ function updateSummaryDisplay() {
  * 商品別レポートと日別レポートを更新します。
  */
 function updateProductAndDailyReports(filteredStats, productStats) {
-  // 商品別レポートを更新
-  const productReportElement = resultsContainer.querySelector('.grid.grid-cols-1.lg\\:grid-cols-2.gap-6 > div:first-child');
-  if (productReportElement) {
-    productReportElement.innerHTML = createProductStatsTable(productStats);
-  }
-
-  // 日別レポートを更新
-  const dailyReportElement = resultsContainer.querySelector('.grid.grid-cols-1.lg\\:grid-cols-2.gap-6 > div:last-child');
-  if (dailyReportElement) {
-    dailyReportElement.innerHTML = createDailyStatsTable(filteredStats);
+  // 既存のレポート部分を完全に置き換え
+  const reportsContainer = resultsContainer.querySelector('.grid.grid-cols-1.lg\\:grid-cols-2.gap-6');
+  if (reportsContainer) {
+    reportsContainer.innerHTML = `
+      ${createProductStatsTable(productStats)}
+      ${createDailyStatsTable(filteredStats)}
+    `;
   }
 }
 
