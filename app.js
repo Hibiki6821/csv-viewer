@@ -385,6 +385,7 @@ function updateSummaryDisplay() {
   const productStats = {};
   let totalRevenue = 0;
   let totalQuantity = 0;
+  let totalUniqueUsers = new Set();
 
   for (const [dateStr, dayData] of Object.entries(filteredStats)) {
     totalRevenue += dayData.revenue || 0;
@@ -397,13 +398,47 @@ function updateSummaryDisplay() {
       }
       productStats[productName].quantity += productData.quantity || 0;
       productStats[productName].revenue += productData.revenue || 0;
+
+      // ユニークユーザーを集計（実際のデータから取得する必要がある）
+      // 現在の実装では、元のデータからユーザー情報を取得できないため、
+      // 商品別レポートの購入者数から推定
     }
   }
 
-  // サマリーカードを更新
-  const summaryCard = document.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
+  // 商品別統計から総ユニークユーザー数を推定
+  for (const [productName, stats] of Object.entries(productStats)) {
+    // 各商品の購入者数を総ユニークユーザー数に加算
+    // 実際の実装では、重複を除く必要があるが、現在のデータ構造では困難
+    // 暫定的に商品別の購入者数の合計を使用
+    for (let i = 0; i < stats.uniqueUsers.size; i++) {
+      totalUniqueUsers.add(`${productName}_${i}`);
+    }
+  }
+
+  // サマリーカードを更新（resultsContainer内の最初の要素を更新）
+  const summaryCard = resultsContainer.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
   if (summaryCard) {
     summaryCard.innerHTML = createSummaryCardHTML(totalRevenue, totalQuantity, productStats, currentSummaryPeriod);
+  }
+
+  // 商品別レポートと日別レポートも更新
+  updateProductAndDailyReports(filteredStats, productStats);
+}
+
+/**
+ * 商品別レポートと日別レポートを更新します。
+ */
+function updateProductAndDailyReports(filteredStats, productStats) {
+  // 商品別レポートを更新
+  const productReportElement = resultsContainer.querySelector('.grid.grid-cols-1.lg\\:grid-cols-2.gap-6 > div:first-child');
+  if (productReportElement) {
+    productReportElement.innerHTML = createProductStatsTable(productStats);
+  }
+
+  // 日別レポートを更新
+  const dailyReportElement = resultsContainer.querySelector('.grid.grid-cols-1.lg\\:grid-cols-2.gap-6 > div:last-child');
+  if (dailyReportElement) {
+    dailyReportElement.innerHTML = createDailyStatsTable(filteredStats);
   }
 }
 
@@ -1137,17 +1172,54 @@ function handleRangeSummary() {
   rangeModalTitle.textContent = `集計レポート (${startDateStr} 〜 ${endDateStr})`;
 
   // 期間内のユニークユーザー数を計算
-  for (const [dateStr, dailyData] of Object.entries(globalDailyStats)) {
-    const currentDate = new Date(dateStr);
-    if (currentDate >= startDate && currentDate <= endDate) {
-      // この日のデータからユニークユーザーを取得（実際のデータ構造に応じて調整が必要）
-      // 現在の実装では、日別データにユーザー情報がないため、商品別統計から推定
-    }
+  // 元の注文データから期間内のユニークユーザーを取得
+  const companyGroupId = companyGroupSelector.value;
+  const castId = castSelector.value;
+
+  if (companyGroupId && castId) {
+    // 元の注文データを再取得して期間内のユニークユーザーを計算
+    calculateUniqueUsersForPeriod(companyGroupId, castId, startDate, endDate)
+      .then(uniqueUsers => {
+        const avgPurchasePerUser = uniqueUsers > 0 ? (rangeTotalQuantity / uniqueUsers).toFixed(2) : '0.00';
+        updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
+      })
+      .catch(error => {
+        console.error('ユニークユーザー計算エラー:', error);
+        const avgPurchasePerUser = '0.00';
+        updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
+      });
+  } else {
+    const avgPurchasePerUser = '0.00';
+    updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
   }
+}
 
-  // 一人当たりの平均購入数を計算（ユニークユーザー数が0の場合は0を表示）
-  const avgPurchasePerUser = rangeUniqueUsers.size > 0 ? (rangeTotalQuantity / rangeUniqueUsers.size).toFixed(2) : '0.00';
+/**
+ * 期間内のユニークユーザー数を計算します。
+ */
+async function calculateUniqueUsersForPeriod(companyGroupId, castId, startDate, endDate) {
+  const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
+  const snapshot = await getDocs(ordersColRef);
 
+  const uniqueUsers = new Set();
+
+  snapshot.forEach(doc => {
+    const orderData = doc.data();
+    if (orderData.status === '取引完了') {
+      const orderDate = new Date(orderData.orderDate.split(' ')[0]);
+      if (orderDate >= startDate && orderDate <= endDate) {
+        uniqueUsers.add(orderData.userId);
+      }
+    }
+  });
+
+  return uniqueUsers.size;
+}
+
+/**
+ * 期間集計モーダルを更新します。
+ */
+function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats) {
   // モーダル内容（サマリー）
   let modalHTML = `
              <div class="bg-blue-50 rounded-lg p-4 mb-6">
