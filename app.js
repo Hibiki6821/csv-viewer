@@ -22,6 +22,7 @@ import {
 let db, auth, userId, appId, correctPasswordHash;
 let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
+let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ (Key: YYYY-MM-DD, Value: { activeUsers: number })
 let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
@@ -637,7 +638,7 @@ async function saveDataToFirestore(castId, records, header) {
 }
 
 /**
- * 指定されたキャストの注文データをFirestoreから読み込み、分析します。
+ * 指定されたキャストの注文データとメタデータをFirestoreから読み込み、分析します。
  */
 async function loadCastData(castId) {
   console.log(`キャストデータ(ID: ${castId})の読み込みと分析を開始...`);
@@ -648,6 +649,8 @@ async function loadCastData(castId) {
 
   try {
     const companyGroupId = companyGroupSelector.value;
+    
+    // 注文データの読み込み
     const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
     const snapshot = await getDocs(ordersColRef);
 
@@ -655,6 +658,19 @@ async function loadCastData(castId) {
     snapshot.forEach(doc => {
       globalAllRecords.push(doc.data());
     });
+    
+    // 日別メタデータ（アクティブユーザー数など）の読み込み
+    globalDailyMetadata = {};
+    try {
+      const metadataColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/dailyMetadata`);
+      const metadataSnapshot = await getDocs(metadataColRef);
+      metadataSnapshot.forEach(doc => {
+        globalDailyMetadata[doc.id] = doc.data();
+      });
+      console.log("日別メタデータ読み込み完了:", Object.keys(globalDailyMetadata).length, "件");
+    } catch (e) {
+      console.warn("日別メタデータの読み込みに失敗 (初回はデータがない可能性があります):", e);
+    }
 
     console.log(`データ読み込み完了。${globalAllRecords.length}件の注文データを取得。`);
 
@@ -765,11 +781,6 @@ function updateViewFromGlobalData() {
   }
 
   // 2. 期間フィルタリング (currentSummaryPeriodを使用)
-  // analyzeDataFromFirestore内で処理しても良いが、サマリー期間ロジックと合わせるため
-  // ここでは全期間のデータをanalyzeに渡して、analyze内でdisplayResultsへ渡すデータを整形する形をとる
-  // ただし、currentSummaryPeriodは「サマリーカードと日別表示」に影響するため、
-  // analyze関数自体は全データを期間ごとに集計する機能を持つ。
-
   // 分析実行
   const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeFilteredData(filteredRecords, currentSummaryPeriod);
 
@@ -824,10 +835,11 @@ function analyzeFilteredData(records, period) {
 
         // --- 日別統計 ---
         if (!dailyStats[orderDateStr]) {
-          dailyStats[orderDateStr] = { quantity: 0, revenue: 0, products: {} };
+          dailyStats[orderDateStr] = { quantity: 0, revenue: 0, products: {}, uniqueUsers: new Set() };
         }
         dailyStats[orderDateStr].quantity += quantity;
         dailyStats[orderDateStr].revenue += price;
+        dailyStats[orderDateStr].uniqueUsers.add(userId); // その日のユニークユーザー
 
         // --- 日別・商品別統計 ---
         if (!dailyStats[orderDateStr].products[productName]) {
@@ -942,20 +954,45 @@ function createProductStatsTable(productStats) {
 
 /**
  * 日別レポートのHTMLを生成します。
+ * アクティブユーザー入力欄とCVRを追加。
  */
 function createDailyStatsTable(dailyStats) {
   const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
 
-  let tableRows = sortedDates.map(date => `
+  let tableRows = sortedDates.map(date => {
+    // アクティブユーザー数の取得（メタデータから）
+    const activeUsers = globalDailyMetadata[date]?.activeUsers || '';
+    // 購入者UU数
+    const purchaseUU = dailyStats[date].uniqueUsers.size;
+    
+    // CVR計算 (購入UU / アクティブユーザー * 100)
+    let cvrDisplay = '-';
+    if (activeUsers && activeUsers > 0) {
+        const cvr = (purchaseUU / activeUsers) * 100;
+        cvrDisplay = cvr.toFixed(2) + '%';
+    }
+
+    return `
             <tr class="border-b border-gray-200 hover:bg-gray-50 cursor-pointer" onclick="window.showDailyDetailsModal('${date}')">
-                <td class="p-3 text-sm text-gray-700">${date}</td>
-                <td class="p-3 text-right font-medium">${dailyStats[date].quantity.toLocaleString()}</td>
-                <td class="p-3 text-right font-semibold text-green-600">${dailyStats[date].revenue.toLocaleString()}円</td>
+                <td class="p-3 text-sm text-gray-700 whitespace-nowrap">${date}</td>
+                <td class="p-3 text-center" onclick="event.stopPropagation()">
+                    <input type="number" 
+                           class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm" 
+                           placeholder="UU入力" 
+                           value="${activeUsers}" 
+                           onchange="window.saveActiveUsers('${date}', this.value)"
+                           min="0">
+                </td>
+                <td class="p-3 text-right text-sm">${purchaseUU.toLocaleString()}</td>
+                <td class="p-3 text-right text-sm font-semibold text-blue-600">${cvrDisplay}</td>
+                <td class="p-3 text-right font-medium text-sm">${dailyStats[date].quantity.toLocaleString()}</td>
+                <td class="p-3 text-right font-semibold text-green-600 text-sm">${dailyStats[date].revenue.toLocaleString()}円</td>
             </tr>
-        `).join('');
+        `;
+  }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="3" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="6" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
@@ -966,6 +1003,9 @@ function createDailyStatsTable(dailyStats) {
                         <thead class="bg-gray-50 sticky top-0">
                             <tr>
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">日付</th>
+                                <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">アクティブ<br>ユーザー</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者<br>(UU)</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
                             </tr>
@@ -976,6 +1016,42 @@ function createDailyStatsTable(dailyStats) {
             </div>
         `;
 }
+
+/**
+ * アクティブユーザー数を保存し、CVRを再計算します。
+ */
+window.saveActiveUsers = async (date, value) => {
+  const numValue = parseInt(value, 10);
+  
+  if (isNaN(numValue) || numValue < 0) {
+      if (value !== '') alert("有効な数値を入力してください");
+      return;
+  }
+
+  const companyGroupId = companyGroupSelector.value;
+  const castId = castSelector.value;
+  
+  if (!companyGroupId || !castId) return;
+
+  try {
+      // グローバルデータを即時更新してUIに反映（UX向上）
+      if (!globalDailyMetadata[date]) globalDailyMetadata[date] = {};
+      globalDailyMetadata[date].activeUsers = numValue;
+      
+      // ビューを更新 (CVR再計算のため)
+      updateViewFromGlobalData();
+
+      // Firestoreに保存
+      const metadataDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/dailyMetadata/${date}`);
+      await setDoc(metadataDocRef, { activeUsers: numValue }, { merge: true });
+      
+      console.log(`${date} のアクティブユーザー数を保存: ${numValue}`);
+
+  } catch (error) {
+      console.error("アクティブユーザー数の保存に失敗:", error);
+      alert("保存に失敗しました。");
+  }
+};
 
 function displayError(message) {
   resultsContainer.innerHTML = `
