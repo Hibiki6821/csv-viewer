@@ -19,12 +19,14 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // --- グローバル変数・定数 ---
-let db, auth, userId, appId, correctPasswordHash; // correctPasswordHash は平文パスワードを保持する変数名として流用
-let globalDailyStats = {}; // 日別データをグローバルに保持
+let db, auth, userId, appId, correctPasswordHash;
+let globalAllRecords = []; // フィルタリング前の全レコード
+let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
 let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
+let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
+let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 
 // --- DOM要素 (認証画面) ---
-// 認証画面の要素は起動時にすぐ取得
 const passwordContainer = document.getElementById('password-container');
 const mainContent = document.getElementById('main-content');
 const passwordForm = document.getElementById('password-form');
@@ -37,7 +39,6 @@ const loginButtonSpinner = document.getElementById('login-button-spinner');
 const passwordLoadingMessage = document.getElementById('password-loading-message');
 
 // --- DOM要素 (メインコンテンツ) ---
-// メインコンテンツの要素はログイン後に取得する
 let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGroupError,
   castSelector, newCastNameInput, addCastButton,
   castError, castLoadingMessage, uploadSection, fileInput, searchSection,
@@ -45,7 +46,8 @@ let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGr
   dailyDetailsModal, modalTitle, modalBody,
   rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
   rangeSummaryModal, rangeModalTitle, rangeModalBody,
-  summaryAllButton, summaryMonthlyButton, summaryWeeklyButton;
+  summaryAllButton, summaryMonthlyButton, summaryWeeklyButton,
+  productTypeFilterContainer, productTypeTabs;
 
 /**
  * Cookieを設定します。
@@ -109,6 +111,8 @@ function showMainContentAndInitApp() {
   summaryAllButton = document.getElementById('summaryAllButton');
   summaryMonthlyButton = document.getElementById('summaryMonthlyButton');
   summaryWeeklyButton = document.getElementById('summaryWeeklyButton');
+  productTypeFilterContainer = document.getElementById('productTypeFilterContainer');
+  productTypeTabs = document.getElementById('productTypeTabs');
 
   // メインコンテンツのイベントリスナーを設定
   setupEventListeners();
@@ -132,15 +136,8 @@ function enablePasswordForm() {
  * アプリのメイン初期化処理
  */
 async function initializeMainApp() {
-  // 認証画面のDOM要素を取得 (これはFirebase初期化より先に実行)
-  // (グローバルスコープで既に取得済み)
-
   // 1. Firebase設定
   try {
-    // ▼▼▼ 変更: 以下の { ... } の中身を、
-    // Firebaseコンソールからコピーした「apiKey: "...",」などの
-    // 設定値で「置き換え」てください。
-    // 「const firebaseConfig =」や「};」を二重に貼り付けないでください。
     const firebaseConfig = {
       apiKey: "AIzaSyDDz9cs9Wgx8Npjrh7FwUB4kF1h8Zwsiik",
       authDomain: "fantia-csv.firebaseapp.com",
@@ -148,49 +145,36 @@ async function initializeMainApp() {
       storageBucket: "fantia-csv.firebasestorage.app",
       messagingSenderId: "457081920405",
       appId: "1:457081920405:web:6a33cb7f82e1ff7739f49c"
-      // measurementId: "G-W1XS2E6VZ9" // このアプリでは不要なため削除
     };
-    // ▲▲▲ 変更 ▲▲▲
-
-    // ▼▼▼ 変更: appIdを固定の文字列に設定 ▼▼▼
-    // (セキュリティルール /artifacts/ここの文字列/public/... と一致させる)
     appId = 'fantia-analyzer-app';
 
     // 2. Firebase初期化
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-    setLogLevel('Debug'); // デバッグ用
+    setLogLevel('Debug');
 
-    // 3. 認証状態の監視を先に設定
+    // 3. 認証状態の監視
     onAuthStateChanged(auth, async (user) => {
       if (user) {
-        // --- 認証成功時 (匿名 or ログイン済み) ---
         userId = user.uid;
         console.log("Firebase 認証成功. UserID:", userId);
 
-        // 4. DBからパスワード（平文）を取得
         try {
           const passDocRef = doc(db, `artifacts/${appId}/public/data/config/password`);
           const passDocSnap = await getDoc(passDocRef);
 
           if (passDocSnap.exists()) {
-            // データベースに保存されている平文のパスワードを取得
-            // フィールド名が 'hash' のままでも中身が平文ならOK
             correctPasswordHash = passDocSnap.data().hash;
             console.log("パスワードの取得成功。");
 
-            // 5. パスワード認証処理
-            // 認証済みかCookieでチェック（Cookieの値も平文パスワード）
             if (getCookie('auth_token_lottery_analyzer') === correctPasswordHash) {
               showMainContentAndInitApp();
-              loadCompanyGroups(); // メインアプリの会社グループ読み込み開始
+              loadCompanyGroups();
             } else {
-              // 認証フォームを有効化
               enablePasswordForm();
             }
           } else {
-            // パスワードがDBに設定されていない
             console.error("Firestoreにパスワードが設定されていません。");
             passwordLoadingMessage.textContent = 'エラー: 管理者が未設定です。';
             passwordLoadingMessage.classList.add('text-red-500');
@@ -201,15 +185,12 @@ async function initializeMainApp() {
           passwordLoadingMessage.classList.add('text-red-500');
         }
 
-        // 6. パスワード認証フォームのイベントリスナー設定 (認証状態に関わらず設定)
         setupPasswordFormListeners();
 
       } else {
-        // --- 未認証時 ---
         console.log("未認証状態。匿名サインインを実行します...");
         try {
           await signInAnonymously(auth);
-          // 成功すると onAuthStateChanged が再度(userありで)呼ばれる
         } catch (anonError) {
           console.error("匿名サインインに失敗:", anonError);
           passwordLoadingMessage.textContent = 'エラー: 認証サーバに接続できません。';
@@ -229,7 +210,6 @@ async function initializeMainApp() {
  * パスワード認証フォームのイベントリスナーを設定します。
  */
 function setupPasswordFormListeners() {
-  // パスワードフォームの送信イベント
   passwordForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     loginButton.disabled = true;
@@ -237,20 +217,12 @@ function setupPasswordFormListeners() {
     loginButtonSpinner.classList.remove('hidden');
 
     const inputPassword = passwordInput.value;
-    // ハッシュ化の処理を削除
 
-    // デバッグ用ログ
-    console.log("入力されたパスワード:", inputPassword);
-    console.log("期待されるパスワード:", correctPasswordHash);
-
-    // 平文のまま比較
     if (inputPassword === correctPasswordHash) {
-      // 認証成功
-      setCookie('auth_token_lottery_analyzer', inputPassword, 10); // Cookieにも平文を保存
+      setCookie('auth_token_lottery_analyzer', inputPassword, 10);
       showMainContentAndInitApp();
-      loadCompanyGroups(); // メインアプリの会社グループ読み込み開始
+      loadCompanyGroups();
     } else {
-      // 認証失敗
       errorMessage.classList.remove('hidden');
       passwordInput.value = '';
       loginButton.disabled = false;
@@ -259,12 +231,10 @@ function setupPasswordFormListeners() {
     }
   });
 
-  // パスワード入力欄で入力を開始したらエラーメッセージを消す
   passwordInput.addEventListener('input', () => {
     errorMessage.classList.add('hidden');
   });
 
-  // 「パスワードを表示する」チェックボックスの処理
   if (showPasswordToggle) {
     showPasswordToggle.addEventListener('change', () => {
       passwordInput.type = showPasswordToggle.checked ? 'text' : 'password';
@@ -274,7 +244,6 @@ function setupPasswordFormListeners() {
 
 /**
  * メインアプリのイベントリスナーを設定します。
- * (showMainContentAndInitAppから呼び出される)
  */
 function setupEventListeners() {
   // 会社グループ選択
@@ -282,7 +251,6 @@ function setupEventListeners() {
     const companyGroupId = e.target.value;
     if (companyGroupId) {
       loadCastsForCompanyGroup(companyGroupId);
-      // サマリーボタンを有効化
       summaryAllButton.disabled = false;
       summaryMonthlyButton.disabled = false;
       summaryWeeklyButton.disabled = false;
@@ -292,21 +260,16 @@ function setupEventListeners() {
       uploadSection.classList.add('hidden');
       resultsContainer.innerHTML = '';
       searchSection.classList.add('hidden');
-      // サマリーボタンを無効化
+      productTypeFilterContainer.classList.add('hidden');
       summaryAllButton.disabled = true;
       summaryMonthlyButton.disabled = true;
       summaryWeeklyButton.disabled = true;
     }
   });
 
-  // 会社グループ追加ボタン
   addCompanyGroupButton.addEventListener('click', handleAddCompanyGroup);
-
-  // 会社グループ追加Enterキー
   newCompanyGroupInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-      handleAddCompanyGroup();
-    }
+    if (e.key === 'Enter') handleAddCompanyGroup();
   });
 
   // キャスト選択
@@ -319,33 +282,22 @@ function setupEventListeners() {
       uploadSection.classList.add('hidden');
       resultsContainer.innerHTML = '';
       searchSection.classList.add('hidden');
-      // キャストが選択解除されたら日付入力も無効化
+      productTypeFilterContainer.classList.add('hidden');
       rangeStartDateInput.disabled = true;
       rangeEndDateInput.disabled = true;
       rangeSummaryButton.disabled = true;
     }
   });
 
-  // キャスト追加ボタン
   addCastButton.addEventListener('click', handleAddCast);
-
-  // キャスト追加Enterキー
   newCastNameInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-      handleAddCast();
-    }
+    if (e.key === 'Enter') handleAddCast();
   });
 
-  // ファイル入力
   fileInput.addEventListener('change', handleFileSelect);
-
-  // 検索入力
   searchInput.addEventListener('input', applySearchFilter);
-
-  // 期間集計ボタン
   rangeSummaryButton.addEventListener('click', handleRangeSummary);
 
-  // サマリー期間選択ボタン
   summaryAllButton.addEventListener('click', () => handleSummaryPeriodChange('all'));
   summaryMonthlyButton.addEventListener('click', () => handleSummaryPeriodChange('monthly'));
   summaryWeeklyButton.addEventListener('click', () => handleSummaryPeriodChange('weekly'));
@@ -357,206 +309,20 @@ function setupEventListeners() {
 function handleSummaryPeriodChange(period) {
   currentSummaryPeriod = period;
 
-  // ボタンのスタイルを更新
   [summaryAllButton, summaryMonthlyButton, summaryWeeklyButton].forEach(btn => {
     btn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
     btn.classList.add('bg-gray-500', 'hover:bg-gray-600');
   });
 
-  // 選択されたボタンのスタイルを更新
   const selectedButton = period === 'all' ? summaryAllButton :
     period === 'monthly' ? summaryMonthlyButton : summaryWeeklyButton;
   selectedButton.classList.remove('bg-gray-500', 'hover:bg-gray-600');
   selectedButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
 
-  // 現在のデータがある場合は再表示
-  if (Object.keys(globalDailyStats).length > 0) {
-    updateSummaryDisplay();
-  }
+  // ビューの再描画 (グローバルデータを使用)
+  updateViewFromGlobalData();
 }
 
-/**
- * サマリー表示を更新します。
- */
-function updateSummaryDisplay() {
-  const filteredStats = filterStatsByPeriod(globalDailyStats, currentSummaryPeriod);
-
-  // 元の注文データから期間内のユニークユーザー情報を取得
-  const companyGroupId = companyGroupSelector.value;
-  const castId = castSelector.value;
-
-  if (companyGroupId && castId) {
-    calculateProductStatsForPeriod(companyGroupId, castId, filteredStats)
-      .then(productStats => {
-        const totalRevenue = Object.values(productStats).reduce((sum, stats) => sum + stats.revenue, 0);
-        const totalQuantity = Object.values(productStats).reduce((sum, stats) => sum + stats.quantity, 0);
-
-        // サマリーカードを更新
-        const summaryCard = resultsContainer.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
-        if (summaryCard) {
-          summaryCard.innerHTML = createSummaryCardHTML(totalRevenue, totalQuantity, productStats, currentSummaryPeriod);
-        }
-
-        // 商品別レポートと日別レポートも更新
-        updateProductAndDailyReports(filteredStats, productStats);
-      })
-      .catch(error => {
-        console.error('商品統計計算エラー:', error);
-        // エラー時は簡易計算で表示
-        updateSummaryDisplayFallback(filteredStats);
-      });
-  } else {
-    updateSummaryDisplayFallback(filteredStats);
-  }
-}
-
-/**
- * 期間内の商品統計を計算します。
- */
-async function calculateProductStatsForPeriod(companyGroupId, castId, filteredStats) {
-  const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
-  const snapshot = await getDocs(ordersColRef);
-
-  const productStats = {};
-
-  // 期間の開始日と終了日を計算
-  const now = new Date();
-  let startDate, endDate;
-
-  switch (currentSummaryPeriod) {
-    case 'monthly':
-      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      endDate = now;
-      break;
-    case 'weekly':
-      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      endDate = now;
-      break;
-    case 'all':
-    default:
-      startDate = new Date('2020-01-01'); // 十分古い日付
-      endDate = new Date('2030-12-31'); // 十分新しい日付
-      break;
-  }
-
-  console.log(`期間フィルタリング: ${startDate.toISOString().split('T')[0]} から ${endDate.toISOString().split('T')[0]} まで`);
-  console.log('注文データ数:', snapshot.size);
-
-  snapshot.forEach(doc => {
-    const orderData = doc.data();
-    if (orderData.status === '取引完了') {
-      const orderDate = new Date(orderData.orderDate.split(' ')[0]); // YYYY-MM-DD 形式
-
-      // 期間内のデータのみを処理
-      if (orderDate >= startDate && orderDate <= endDate) {
-        const productName = orderData.productName;
-        const quantity = orderData.quantity || 0;
-        const revenue = orderData.price || 0;
-        const userId = orderData.userId;
-
-        if (!productStats[productName]) {
-          productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
-        }
-
-        productStats[productName].quantity += quantity;
-        productStats[productName].revenue += revenue;
-        productStats[productName].uniqueUsers.add(userId);
-
-        console.log(`商品: ${productName}, ユーザー: ${userId}, 数量: ${quantity}, 日付: ${orderData.orderDate.split(' ')[0]}`);
-      }
-    }
-  });
-
-  // デバッグ用ログ
-  for (const [productName, stats] of Object.entries(productStats)) {
-    console.log(`商品: ${productName}, 購入者数: ${stats.uniqueUsers.size}, 数量: ${stats.quantity}`);
-  }
-
-  return productStats;
-}
-
-/**
- * フォールバック用のサマリー表示更新（エラー時）
- */
-function updateSummaryDisplayFallback(filteredStats) {
-  const productStats = {};
-  let totalRevenue = 0;
-  let totalQuantity = 0;
-
-  for (const [dateStr, dayData] of Object.entries(filteredStats)) {
-    totalRevenue += dayData.revenue || 0;
-    totalQuantity += dayData.quantity || 0;
-
-    // 商品別統計を集計（ユニークユーザー情報なし）
-    for (const [productName, productData] of Object.entries(dayData.products || {})) {
-      if (!productStats[productName]) {
-        productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
-      }
-      productStats[productName].quantity += productData.quantity || 0;
-      productStats[productName].revenue += productData.revenue || 0;
-    }
-  }
-
-  // サマリーカードを更新
-  const summaryCard = resultsContainer.querySelector('.bg-white.rounded-xl.shadow-lg.p-6.border.border-gray-200');
-  if (summaryCard) {
-    summaryCard.innerHTML = createSummaryCardHTML(totalRevenue, totalQuantity, productStats, currentSummaryPeriod);
-  }
-
-  // 商品別レポートと日別レポートも更新
-  updateProductAndDailyReports(filteredStats, productStats);
-}
-
-/**
- * 商品別レポートと日別レポートを更新します。
- */
-function updateProductAndDailyReports(filteredStats, productStats) {
-  // 既存のレポート部分を完全に置き換え
-  const reportsContainer = resultsContainer.querySelector('.grid.grid-cols-1.lg\\:grid-cols-2.gap-6');
-  if (reportsContainer) {
-    reportsContainer.innerHTML = `
-      ${createProductStatsTable(productStats)}
-      ${createDailyStatsTable(filteredStats)}
-    `;
-  }
-}
-
-/**
- * 期間に応じて統計をフィルタリングします。
- */
-function filterStatsByPeriod(dailyStats, period) {
-  const now = new Date();
-  const filteredStats = {};
-
-  for (const [dateStr, dayData] of Object.entries(dailyStats)) {
-    const date = new Date(dateStr);
-    let include = false;
-
-    switch (period) {
-      case 'monthly':
-        // 過去30日
-        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        include = date >= thirtyDaysAgo;
-        break;
-      case 'weekly':
-        // 過去7日
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        include = date >= sevenDaysAgo;
-        break;
-      case 'all':
-      default:
-        include = true;
-        break;
-    }
-
-    if (include) {
-      filteredStats[dateStr] = dayData;
-    }
-  }
-
-  console.log(`期間フィルタリング結果 (${period}):`, Object.keys(filteredStats));
-  return filteredStats;
-}
 
 /**
  * 会社グループ管理UIを有効化します。
@@ -576,7 +342,6 @@ function enableCastManagement() {
   addCastButton.disabled = false;
   castLoadingMessage.classList.add('hidden');
 
-  // キャストが読み込めたら日付選択も有効化
   rangeStartDateInput.disabled = false;
   rangeEndDateInput.disabled = false;
   rangeSummaryButton.disabled = false;
@@ -586,21 +351,16 @@ function enableCastManagement() {
  * Firestoreから会社グループ一覧を読み込みます。
  */
 function loadCompanyGroups() {
-  console.log("会社グループ一覧の読み込み開始...");
   const companyGroupsColRef = collection(db, `artifacts/${appId}/public/data/companyGroups`);
   const q = query(companyGroupsColRef);
 
   onSnapshot(q, (snapshot) => {
-    console.log("会社グループ一覧のデータ更新を検知");
     const companyGroups = [];
     snapshot.forEach((doc) => {
       companyGroups.push({ id: doc.id, name: doc.data().name });
     });
-
-    // 名前でソート
     companyGroups.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
 
-    // ドロップダウンを更新
     const currentCompanyGroupId = companyGroupSelector.value;
     companyGroupSelector.innerHTML = '<option value="">選択してください</option>';
     companyGroups.forEach(group => {
@@ -610,14 +370,10 @@ function loadCompanyGroups() {
       companyGroupSelector.appendChild(option);
     });
 
-    // 選択状態を復元
     if (currentCompanyGroupId) {
       companyGroupSelector.value = currentCompanyGroupId;
     }
-
-    // UIを有効化
     enableCompanyGroupManagement();
-    console.log("会社グループ一覧の読み込み完了。");
 
   }, (error) => {
     console.error("会社グループ一覧の読み込みに失敗:", error);
@@ -629,21 +385,16 @@ function loadCompanyGroups() {
  * 指定された会社グループのキャスト一覧を読み込みます。
  */
 function loadCastsForCompanyGroup(companyGroupId) {
-  console.log(`会社グループ ${companyGroupId} のキャスト一覧の読み込み開始...`);
   const castsColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts`);
   const q = query(castsColRef);
 
   onSnapshot(q, (snapshot) => {
-    console.log("キャスト一覧のデータ更新を検知");
     const casts = [];
     snapshot.forEach((doc) => {
       casts.push({ id: doc.id, name: doc.data().name });
     });
-
-    // 名前でソート
     casts.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
 
-    // ドロップダウンを更新
     const currentCastId = castSelector.value;
     castSelector.innerHTML = '<option value="">選択してください</option>';
     casts.forEach(cast => {
@@ -653,14 +404,10 @@ function loadCastsForCompanyGroup(companyGroupId) {
       castSelector.appendChild(option);
     });
 
-    // 選択状態を復元
     if (currentCastId) {
       castSelector.value = currentCastId;
     }
-
-    // UIを有効化
     enableCastManagement();
-    console.log("キャスト一覧の読み込み完了。");
 
   }, (error) => {
     console.error("キャスト一覧の読み込みに失敗:", error);
@@ -679,25 +426,18 @@ async function handleAddCompanyGroup() {
     companyGroupError.textContent = '会社名を入力してください。';
     return;
   }
-
   companyGroupError.textContent = '';
   addCompanyGroupButton.disabled = true;
 
   try {
-    // ドキュメントIDを会社名から自動生成
     const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(companyGroupName));
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const companyGroupId = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
     const companyGroupDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}`);
+    await setDoc(companyGroupDocRef, { name: companyGroupName });
 
-    await setDoc(companyGroupDocRef, {
-      name: companyGroupName
-    });
-
-    console.log("会社グループ追加成功:", companyGroupName);
     newCompanyGroupInput.value = '';
-
   } catch (error) {
     console.error("会社グループ追加エラー:", error);
     companyGroupError.textContent = '会社グループの追加に失敗しました。';
@@ -717,7 +457,6 @@ async function handleAddCast() {
     castError.textContent = 'キャスト名を入力してください。';
     return;
   }
-
   if (!companyGroupId) {
     castError.textContent = '会社グループを選択してください。';
     return;
@@ -727,20 +466,14 @@ async function handleAddCast() {
   addCastButton.disabled = true;
 
   try {
-    // ドキュメントIDをキャスト名から自動生成（衝突を避けるため）
     const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(castName));
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const castId = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
     const castDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}`);
+    await setDoc(castDocRef, { name: castName });
 
-    await setDoc(castDocRef, {
-      name: castName
-    });
-
-    console.log("キャスト追加成功:", castName);
     newCastNameInput.value = '';
-
   } catch (error) {
     console.error("キャスト追加エラー:", error);
     castError.textContent = 'キャストの追加に失敗しました。';
@@ -751,18 +484,16 @@ async function handleAddCast() {
 
 /**
  * ファイルが選択されたときに処理を開始します。
- * @param {Event} event - ファイル選択イベント
  */
 function handleFileSelect(event) {
   const file = event.target.files[0];
   const castId = castSelector.value;
-  if (!file || !castId) {
-    return;
-  }
+  if (!file || !castId) return;
 
   resultsContainer.innerHTML = '';
   loadingIndicator.classList.remove('hidden');
   searchSection.classList.add('hidden');
+  productTypeFilterContainer.classList.add('hidden');
 
   const reader = new FileReader();
 
@@ -770,21 +501,15 @@ function handleFileSelect(event) {
     try {
       const csvText = e.target.result;
       const { header, records } = parseCSV(csvText);
-
-      // Firestoreへのバッチ書き込み
       await saveDataToFirestore(castId, records, header);
-
-      // 完了後、自動的にデータを再読み込み・分析
-      await loadCastData(castId);
-
+      await loadCastData(castId); // 完了後に再読み込み
       console.log("CSVデータの保存・分析が完了しました。");
-
     } catch (error) {
       console.error("エラーが発生しました:", error);
       displayError("ファイルの処理中にエラーが発生しました。" + error.message);
     } finally {
       loadingIndicator.classList.add('hidden');
-      fileInput.value = ''; // ファイル選択をリセット
+      fileInput.value = '';
     }
   };
 
@@ -798,13 +523,11 @@ function handleFileSelect(event) {
 
 /**
  * CSV文字列をパースしてヘッダーとデータ記録に分割します。
- * @param {string} csvText - CSVファイルの全テキスト
- * @returns {{header: string[], records: string[][]}} パースされたデータ
+ * 商品のタイプ列にも対応。
  */
 function parseCSV(csvText) {
   const lines = csvText.replace(/\r/g, '').trim().split('\n');
 
-  // Fantia CSVのヘッダーは3行目にある
   if (lines.length < 4) {
     throw new Error("CSVデータが不十分か、形式が正しくありません。");
   }
@@ -813,10 +536,8 @@ function parseCSV(csvText) {
     const result = [];
     let field = '';
     let inQuotes = false;
-
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
-
       if (char === '"') {
         if (inQuotes && line[i + 1] === '"') {
           field += '"';
@@ -841,29 +562,23 @@ function parseCSV(csvText) {
   const header = headerLine.split(',').map(h => h.trim());
   const records = dataLines.filter(line => line.trim() !== '').map(line => parseLine(line));
 
-  // 必要な列のインデックスを確認
   const requiredColumns = ['注文ステータス', '注文日時', '商品名', '数量', 'ユーザーID', '合計金額（税込）', '注文ID'];
-  const indices = {};
   requiredColumns.forEach(colName => {
-    const index = header.indexOf(colName);
-    if (index === -1) {
+    if (header.indexOf(colName) === -1) {
       throw new Error(`必要な列が見つかりません: ${colName}`);
     }
-    indices[colName] = index;
   });
 
-  console.log("CSVパース成功。ヘッダー:", header, "レコード数:", records.length);
-  return { header, records, indices };
+  return { header, records };
 }
 
 /**
  * パースされたCSVデータをFirestoreにバッチ書き込みします。
- * 注文IDをドキュメントIDとして使用し、データを上書き（set）します。
+ * 商品タイプ(productType)も保存します。
  */
 async function saveDataToFirestore(castId, records, header) {
   console.log(`Firestoreへのバッチ書き込み開始... (${records.length}件)`);
 
-  // 必要な列のインデックスを取得
   const indices = {
     status: header.indexOf('注文ステータス'),
     date: header.indexOf('注文日時'),
@@ -871,35 +586,27 @@ async function saveDataToFirestore(castId, records, header) {
     quantity: header.indexOf('数量'),
     userId: header.indexOf('ユーザーID'),
     price: header.indexOf('合計金額（税込）'),
-    orderId: header.indexOf('注文ID')
+    orderId: header.indexOf('注文ID'),
+    productType: header.indexOf('商品のタイプ') // 新規追加（存在しない場合は-1）
   };
 
-  if (indices.orderId === -1) {
-    throw new Error("CSVに「注文ID」列が見つかりません。データの上書き・マージに必須です。");
-  }
-  if (Object.values(indices).includes(-1)) {
-    throw new Error("必要な列（注文ステータス、注文日時など）が見つかりません。");
-  }
-
-  // バッチ処理の準備
   let batch = writeBatch(db);
   let operationCount = 0;
   const companyGroupId = companyGroupSelector.value;
   const collectionRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
 
   for (const record of records) {
-    if (record.length < header.length) {
-      console.warn('列数がヘッダーと一致しないため、この行をスキップします:', record);
-      continue;
-    }
+    if (record.length < header.length) continue;
 
     const orderId = record[indices.orderId];
-    if (!orderId) {
-      console.warn('注文IDが空のため、この行をスキップします:', record);
-      continue;
+    if (!orderId) continue;
+
+    // 商品タイプを取得（列がない場合は '未分類' とする）
+    let productType = '未分類';
+    if (indices.productType !== -1 && record[indices.productType]) {
+      productType = record[indices.productType];
     }
 
-    // Firestoreに保存するデータオブジェクトを作成
     const orderData = {
       orderId: orderId,
       status: record[indices.status],
@@ -908,30 +615,25 @@ async function saveDataToFirestore(castId, records, header) {
       quantity: parseInt(record[indices.quantity], 10) || 0,
       userId: record[indices.userId],
       price: parseInt(record[indices.price], 10) || 0,
+      productType: productType
     };
 
-    // 注文IDをドキュメントIDとして設定
     const docRef = doc(collectionRef, orderId);
-    batch.set(docRef, orderData); // set = 常に上書き
+    batch.set(docRef, orderData);
 
     operationCount++;
-
-    // Firestoreのバッチ書き込みは500件ごとにコミット
     if (operationCount >= 500) {
       await batch.commit();
-      batch = writeBatch(db); // 新しいバッチを開始
+      batch = writeBatch(db);
       operationCount = 0;
       console.log("バッチをコミットしました (500件)");
     }
   }
 
-  // 残りのバッチをコミット
   if (operationCount > 0) {
     await batch.commit();
     console.log(`最後のバッチをコミットしました (${operationCount}件)`);
   }
-
-  console.log("Firestoreへのバッチ書き込み完了。");
 }
 
 /**
@@ -942,35 +644,38 @@ async function loadCastData(castId) {
   resultsContainer.innerHTML = '';
   loadingIndicator.classList.remove('hidden');
   searchSection.classList.add('hidden');
+  productTypeFilterContainer.classList.add('hidden');
 
   try {
     const companyGroupId = companyGroupSelector.value;
     const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
     const snapshot = await getDocs(ordersColRef);
 
-    const records = [];
+    globalAllRecords = [];
     snapshot.forEach(doc => {
-      records.push(doc.data());
+      globalAllRecords.push(doc.data());
     });
 
-    console.log(`データ読み込み完了。${records.length}件の注文データを分析します。`);
+    console.log(`データ読み込み完了。${globalAllRecords.length}件の注文データを取得。`);
 
-    if (records.length === 0) {
+    if (globalAllRecords.length === 0) {
       displayError("このキャストにはまだ注文データがありません。CSVをアップロードしてください。");
       searchSection.classList.add('hidden');
       return;
     }
 
-    // 読み込んだデータを分析
-    const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeDataFromFirestore(records);
+    // 商品タイプの一覧を作成
+    extractAvailableProductTypes(globalAllRecords);
 
-    // グローバル変数に日別データを保存
-    globalDailyStats = dailyStats;
+    // 商品タイプ選択タブを描画
+    renderProductTypeTabs();
 
-    // 結果を表示
-    displayResults(dailyStats, productStats, totalRevenue, totalQuantity);
+    // デフォルトで「すべて」を選択して表示
+    currentProductTypeFilter = 'all';
+    updateViewFromGlobalData();
 
     searchSection.classList.remove('hidden');
+    productTypeFilterContainer.classList.remove('hidden');
 
   } catch (error) {
     console.error("キャストデータの読み込み・分析エラー:", error);
@@ -980,54 +685,168 @@ async function loadCastData(castId) {
   }
 }
 
+/**
+ * 全レコードから存在する商品タイプを抽出します。
+ */
+function extractAvailableProductTypes(records) {
+  availableProductTypes = new Set();
+  records.forEach(record => {
+    if (record.productType) {
+      availableProductTypes.add(record.productType);
+    } else {
+      // 古いデータなどでフィールドがない場合
+      availableProductTypes.add('未分類');
+    }
+  });
+}
 
 /**
- * Firestoreから読み込んだデータを分析し、統計情報を計算します。
- * @param {object[]} records - Firestoreの注文ドキュメントの配列
- * @returns {object} 分析結果
+ * 商品タイプ切り替えタブを描画します。
  */
-function analyzeDataFromFirestore(records) {
+function renderProductTypeTabs() {
+  productTypeTabs.innerHTML = '';
+
+  // 「すべて」タブ
+  const allTab = document.createElement('button');
+  allTab.textContent = 'すべて';
+  allTab.dataset.type = 'all';
+  allTab.className = 'px-4 py-2 rounded-lg font-medium text-sm transition-colors ' +
+    (currentProductTypeFilter === 'all' ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300');
+  allTab.onclick = () => handleProductTypeChange('all');
+  productTypeTabs.appendChild(allTab);
+
+  // 各商品タイプのタブ
+  // 名前順にソートして表示
+  const sortedTypes = Array.from(availableProductTypes).sort();
+  sortedTypes.forEach(type => {
+    const tab = document.createElement('button');
+    tab.textContent = type;
+    tab.dataset.type = type;
+    tab.className = 'px-4 py-2 rounded-lg font-medium text-sm transition-colors ' +
+      (currentProductTypeFilter === type ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300');
+    tab.onclick = () => handleProductTypeChange(type);
+    productTypeTabs.appendChild(tab);
+  });
+}
+
+/**
+ * 商品タイプが変更されたときの処理
+ */
+function handleProductTypeChange(type) {
+  currentProductTypeFilter = type;
+  
+  // タブのスタイル更新
+  const tabs = productTypeTabs.querySelectorAll('button');
+  tabs.forEach(tab => {
+    if (tab.dataset.type === type) {
+      tab.className = 'px-4 py-2 rounded-lg font-medium text-sm transition-colors bg-blue-600 text-white shadow-md';
+    } else {
+      tab.className = 'px-4 py-2 rounded-lg font-medium text-sm transition-colors bg-white text-gray-700 hover:bg-gray-100 border border-gray-300';
+    }
+  });
+
+  // データをフィルタリングして再表示
+  updateViewFromGlobalData();
+}
+
+/**
+ * グローバルデータから、現在のフィルタ設定（期間・商品タイプ）に基づいて表示を更新します。
+ */
+function updateViewFromGlobalData() {
+  if (!globalAllRecords || globalAllRecords.length === 0) return;
+
+  // 1. 商品タイプでフィルタリング
+  let filteredRecords = globalAllRecords;
+  if (currentProductTypeFilter !== 'all') {
+    filteredRecords = globalAllRecords.filter(r => {
+      const type = r.productType || '未分類';
+      return type === currentProductTypeFilter;
+    });
+  }
+
+  // 2. 期間フィルタリング (currentSummaryPeriodを使用)
+  // analyzeDataFromFirestore内で処理しても良いが、サマリー期間ロジックと合わせるため
+  // ここでは全期間のデータをanalyzeに渡して、analyze内でdisplayResultsへ渡すデータを整形する形をとる
+  // ただし、currentSummaryPeriodは「サマリーカードと日別表示」に影響するため、
+  // analyze関数自体は全データを期間ごとに集計する機能を持つ。
+
+  // 分析実行
+  const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeFilteredData(filteredRecords, currentSummaryPeriod);
+
+  // グローバルな日別統計を更新 (モーダル表示などで使用)
+  globalDailyStats = dailyStats;
+
+  // 結果表示
+  displayResults(dailyStats, productStats, totalRevenue, totalQuantity);
+}
+
+
+/**
+ * フィルタ済みのレコードデータを分析し、統計情報を計算します。
+ */
+function analyzeFilteredData(records, period) {
   const dailyStats = {};
   const productStats = {};
   let totalRevenue = 0;
   let totalQuantity = 0;
 
+  const now = new Date();
+  let startDate;
+
+  // 期間フィルタの開始日設定
+  switch (period) {
+    case 'monthly':
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
+    case 'weekly':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case 'all':
+    default:
+      startDate = new Date('2000-01-01'); // 全期間
+      break;
+  }
+
   for (const record of records) {
-    // "取引完了" のデータのみを分析対象とする
     if (record.status === '取引完了') {
-      const date = record.orderDate.split(' ')[0]; // YYYY-MM-DD 形式
-      const productName = record.productName;
-      const quantity = record.quantity || 0;
-      const userId = record.userId;
-      const price = record.price || 0;
+      const orderDateStr = record.orderDate.split(' ')[0];
+      const orderDate = new Date(orderDateStr);
 
-      totalRevenue += price;
-      totalQuantity += quantity;
+      // 期間チェック
+      if (orderDate >= startDate) {
+        const productName = record.productName;
+        const quantity = record.quantity || 0;
+        const userId = record.userId;
+        const price = record.price || 0;
 
-      // --- 日別統計 ---
-      if (!dailyStats[date]) {
-        dailyStats[date] = { quantity: 0, revenue: 0, products: {} };
+        totalRevenue += price;
+        totalQuantity += quantity;
+
+        // --- 日別統計 ---
+        if (!dailyStats[orderDateStr]) {
+          dailyStats[orderDateStr] = { quantity: 0, revenue: 0, products: {} };
+        }
+        dailyStats[orderDateStr].quantity += quantity;
+        dailyStats[orderDateStr].revenue += price;
+
+        // --- 日別・商品別統計 ---
+        if (!dailyStats[orderDateStr].products[productName]) {
+          dailyStats[orderDateStr].products[productName] = { quantity: 0, revenue: 0 };
+        }
+        dailyStats[orderDateStr].products[productName].quantity += quantity;
+        dailyStats[orderDateStr].products[productName].revenue += price;
+
+        // --- 商品別統計 ---
+        if (!productStats[productName]) {
+          productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
+        }
+        productStats[productName].quantity += quantity;
+        productStats[productName].revenue += price;
+        productStats[productName].uniqueUsers.add(userId);
       }
-      dailyStats[date].quantity += quantity;
-      dailyStats[date].revenue += price;
-
-      // --- 日別・商品別統計 ---
-      if (!dailyStats[date].products[productName]) {
-        dailyStats[date].products[productName] = { quantity: 0, revenue: 0 };
-      }
-      dailyStats[date].products[productName].quantity += quantity;
-      dailyStats[date].products[productName].revenue += price;
-
-      // --- 商品別統計 ---
-      if (!productStats[productName]) {
-        productStats[productName] = { quantity: 0, revenue: 0, uniqueUsers: new Set() };
-      }
-      productStats[productName].quantity += quantity;
-      productStats[productName].revenue += price;
-      productStats[productName].uniqueUsers.add(userId);
     }
   }
-  console.log("データ分析完了。");
+
   return { dailyStats, productStats, totalRevenue, totalQuantity };
 }
 
@@ -1035,28 +854,30 @@ function analyzeDataFromFirestore(records) {
  * 分析結果をHTMLとして画面に表示します。
  */
 function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
+  // ジャンル表示用のラベル作成
+  let genreLabel = currentProductTypeFilter === 'all' ? '' : `（${currentProductTypeFilter}）`;
+
   resultsContainer.innerHTML = `
-            ${createSummaryCard(totalRevenue, totalQuantity, productStats)}
+            ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel)}
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 ${createProductStatsTable(productStats)}
                 ${createDailyStatsTable(dailyStats)}
             </div>
         `;
-  // 検索フィルターをリセット（新しいデータが表示されたため）
   applySearchFilter();
 }
 
 /**
  * 全体サマリーカードのHTMLを生成します。
  */
-function createSummaryCard(totalRevenue, totalQuantity, productStats) {
+function createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel) {
   const uniqueProductCount = Object.keys(productStats).length;
   const periodLabel = currentSummaryPeriod === 'all' ? '全体' :
     currentSummaryPeriod === 'monthly' ? '月間' : '週間';
 
   return `
         <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-            <h2 class="text-xl font-bold text-gray-800 mb-4">${periodLabel}サマリー（取引完了のみ）</h2>
+            <h2 class="text-xl font-bold text-gray-800 mb-4">${periodLabel}サマリー ${genreLabel} <span class="text-sm font-normal text-gray-500 ml-2">※取引完了のみ</span></h2>
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
                 <div>
                     <p class="text-sm text-gray-500">総売上金額</p>
@@ -1076,33 +897,6 @@ function createSummaryCard(totalRevenue, totalQuantity, productStats) {
 }
 
 /**
- * サマリーカードのHTMLを生成します（期間指定版）。
- */
-function createSummaryCardHTML(totalRevenue, totalQuantity, productStats, period) {
-  const uniqueProductCount = Object.keys(productStats).length;
-  const periodLabel = period === 'all' ? '全体' :
-    period === 'monthly' ? '月間' : '週間';
-
-  return `
-        <h2 class="text-xl font-bold text-gray-800 mb-4">${periodLabel}サマリー（取引完了のみ）</h2>
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-            <div>
-                <p class="text-sm text-gray-500">総売上金額</p>
-                <p class="text-2xl font-semibold text-blue-600">${totalRevenue.toLocaleString()}円</p>
-            </div>
-            <div>
-                <p class="text-sm text-gray-500">総販売個数</p>
-                <p class="text-2xl font-semibold text-blue-600">${totalQuantity.toLocaleString()}個</p>
-            </div>
-            <div>
-                <p class="text-sm text-gray-500">販売商品数</p>
-                <p class="text-2xl font-semibold text-blue-600">${uniqueProductCount}種類</p>
-            </div>
-        </div>
-        `;
-}
-
-/**
  * 商品別レポートのHTMLを生成します。
  */
 function createProductStatsTable(productStats) {
@@ -1110,7 +904,6 @@ function createProductStatsTable(productStats) {
 
   let tableRows = sortedProducts.map(([name, stats]) => {
     const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
-    // data-name属性に商品名を設定（検索用）
     return `
                 <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
                     <td class="p-3 text-sm text-gray-700">${name}</td>
@@ -1184,9 +977,6 @@ function createDailyStatsTable(dailyStats) {
         `;
 }
 
-/**
- * エラーメッセージを表示します。
- */
 function displayError(message) {
   resultsContainer.innerHTML = `
             <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg" role="alert">
@@ -1204,7 +994,7 @@ function handleRangeSummary() {
   const endDateStr = rangeEndDateInput.value;
 
   if (!startDateStr || !endDateStr) {
-    alert("開始日と終了日を両方選択してください。"); // このalertは許容範囲
+    alert("開始日と終了日を両方選択してください。");
     return;
   }
 
@@ -1215,95 +1005,51 @@ function handleRangeSummary() {
     alert("終了日は開始日より後の日付を選択してください。");
     return;
   }
-
-  // 終了日の時刻を 23:59:59 に設定して、その日全体が含まれるようにする
   endDate.setHours(23, 59, 59, 999);
 
-  console.log(`期間集計: ${startDateStr} から ${endDateStr} まで`);
+  // 1. まず現在のフィルタ(商品タイプ)で絞り込む
+  let targetRecords = globalAllRecords;
+  if (currentProductTypeFilter !== 'all') {
+    targetRecords = globalAllRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
+  }
 
-  // globalDailyStats から該当期間のデータを抽出して集計
-  const rangeProductStats = {};
+  // 2. その中から期間で集計
   let rangeTotalRevenue = 0;
   let rangeTotalQuantity = 0;
-  let rangeUniqueUsers = new Set(); // 期間内のユニークユーザー
+  const rangeProductStats = {};
+  const uniqueUsers = new Set();
 
-  for (const [dateStr, dailyData] of Object.entries(globalDailyStats)) {
-    const currentDate = new Date(dateStr);
-    if (currentDate >= startDate && currentDate <= endDate) {
-      // 期間内の総売上・総個数を加算
-      rangeTotalRevenue += dailyData.revenue;
-      rangeTotalQuantity += dailyData.quantity;
+  for (const record of targetRecords) {
+    if (record.status === '取引完了') {
+      const orderDate = new Date(record.orderDate.split(' ')[0]);
+      if (orderDate >= startDate && orderDate <= endDate) {
+        rangeTotalRevenue += record.price || 0;
+        rangeTotalQuantity += record.quantity || 0;
+        uniqueUsers.add(record.userId);
 
-      // 商品別データをマージ
-      for (const [productName, productData] of Object.entries(dailyData.products)) {
+        const productName = record.productName;
         if (!rangeProductStats[productName]) {
           rangeProductStats[productName] = { quantity: 0, revenue: 0 };
         }
-        rangeProductStats[productName].quantity += productData.quantity;
-        rangeProductStats[productName].revenue += productData.revenue;
+        rangeProductStats[productName].quantity += (record.quantity || 0);
+        rangeProductStats[productName].revenue += (record.price || 0);
       }
     }
   }
 
-  // 期間内の購入者数を計算 (元のデータに購入者情報がないため、この実装では商品別レポートから取得は難しい)
-  // このデモでは、期間内の商品別集計と総合計を表示する
+  const userCount = uniqueUsers.size;
+  const avgPurchasePerUser = userCount > 0 ? (rangeTotalQuantity / userCount).toFixed(2) : '0.00';
 
-  // モーダルタイトル設定
-  rangeModalTitle.textContent = `集計レポート (${startDateStr} 〜 ${endDateStr})`;
-
-  // 期間内のユニークユーザー数を計算
-  // 元の注文データから期間内のユニークユーザーを取得
-  const companyGroupId = companyGroupSelector.value;
-  const castId = castSelector.value;
-
-  if (companyGroupId && castId) {
-    // 元の注文データを再取得して期間内のユニークユーザーを計算
-    calculateUniqueUsersForPeriod(companyGroupId, castId, startDate, endDate)
-      .then(uniqueUsers => {
-        const avgPurchasePerUser = uniqueUsers > 0 ? (rangeTotalQuantity / uniqueUsers).toFixed(2) : '0.00';
-        updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
-      })
-      .catch(error => {
-        console.error('ユニークユーザー計算エラー:', error);
-        const avgPurchasePerUser = '0.00';
-        updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
-      });
-  } else {
-    const avgPurchasePerUser = '0.00';
-    updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
-  }
+  updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
 }
 
-/**
- * 期間内のユニークユーザー数を計算します。
- */
-async function calculateUniqueUsersForPeriod(companyGroupId, castId, startDate, endDate) {
-  const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
-  const snapshot = await getDocs(ordersColRef);
 
-  const uniqueUsers = new Set();
-
-  snapshot.forEach(doc => {
-    const orderData = doc.data();
-    if (orderData.status === '取引完了') {
-      const orderDate = new Date(orderData.orderDate.split(' ')[0]);
-      if (orderDate >= startDate && orderDate <= endDate) {
-        uniqueUsers.add(orderData.userId);
-      }
-    }
-  });
-
-  return uniqueUsers.size;
-}
-
-/**
- * 期間集計モーダルを更新します。
- */
 function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats) {
-  // モーダル内容（サマリー）
+  let genreText = currentProductTypeFilter === 'all' ? '' : `<span class="text-sm font-normal ml-2">(${currentProductTypeFilter})</span>`;
+
   let modalHTML = `
              <div class="bg-blue-50 rounded-lg p-4 mb-6">
-                 <h3 class="text-lg font-bold text-gray-800 mb-3">期間サマリー</h3>
+                 <h3 class="text-lg font-bold text-gray-800 mb-3">期間サマリー${genreText}</h3>
                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
                      <div>
                          <p class="text-sm text-gray-500">期間売上金額</p>
@@ -1321,7 +1067,6 @@ function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurch
              </div>
             `;
 
-  // モーダル内容（商品別テーブル）
   const sortedProducts = Object.entries(rangeProductStats).sort(([, a], [, b]) => b.revenue - a.revenue);
 
   const productRows = sortedProducts.map(([name, stats]) => `
@@ -1356,72 +1101,52 @@ function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurch
  * 検索フィルターを適用します。
  */
 function applySearchFilter() {
-  // searchInputが初期化される前に呼ばれる可能性があるため、存在チェック
   if (!searchInput) return;
-
   const query = searchInput.value.toLowerCase().trim();
 
-  // 商品別レポートのフィルタリング
   const productTable = document.getElementById('productStatsTable');
   if (productTable) {
     const rows = productTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     for (const row of rows) {
       const name = row.dataset.searchName;
       if (name) {
-        if (name.includes(query)) {
-          row.style.display = '';
-        } else {
-          row.style.display = 'none';
-        }
+        row.style.display = name.includes(query) ? '' : 'none';
       }
     }
   }
 
-  // (もしモーダルが開いていれば) モーダル内のフィルタリング
   const modalTable = document.getElementById('modalProductStatsTable');
   if (modalTable && !dailyDetailsModal.classList.contains('opacity-0')) {
     const modalRows = modalTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     for (const row of modalRows) {
       const name = row.dataset.searchName;
       if (name) {
-        if (name.includes(query)) {
-          row.style.display = '';
-        } else {
-          row.style.display = 'none';
-        }
+        row.style.display = name.includes(query) ? '' : 'none';
       }
     }
   }
-
-  // (もし期間集計モーダルが開いていれば) モーダル内のフィルタリング
+    
   const rangeModalTable = document.getElementById('modalRangeProductStatsTable');
   if (rangeModalTable && !rangeSummaryModal.classList.contains('opacity-0')) {
     const modalRows = rangeModalTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     for (const row of modalRows) {
       const name = row.dataset.searchName;
       if (name) {
-        if (name.includes(query)) {
-          row.style.display = '';
-        } else {
-          row.style.display = 'none';
-        }
+         row.style.display = name.includes(query) ? '' : 'none';
       }
     }
   }
 }
 
 // --- モーダル制御 ---
-// グローバルスコープに関数を公開
 
-/**
- * 日別詳細モーダルを表示します。
- * @param {string} date - 表示する日付 (YYYY-MM-DD)
- */
 window.showDailyDetailsModal = (date) => {
+  // globalDailyStatsは現在選択されているタブ（ジャンル）に基づいてフィルタリングされたデータ
   const data = globalDailyStats[date];
   if (!data) return;
 
   modalTitle.textContent = `${date} の商品別レポート`;
+  // ジャンル名も表示したければ: modalTitle.textContent += ` (${currentProductTypeFilter === 'all' ? '全体' : currentProductTypeFilter})`;
 
   const products = data.products;
   const sortedProducts = Object.entries(products).sort(([, a], [, b]) => b.quantity - a.quantity);
@@ -1439,7 +1164,7 @@ window.showDailyDetailsModal = (date) => {
                 <thead class="border-b">
                     <tr>
                         <th class="pb-2 text-left font-semibold text-gray-600">商品名</th>
-                        <th class="pb-2 text-right font-semibold text-gray-600">販売個S数</th>
+                        <th class="pb-2 text-right font-semibold text-gray-600">販売個数</th>
                         <th class="pb-2 text-right font-semibold text-gray-600">売上</th>
                     </tr>
                 </thead>
@@ -1449,35 +1174,22 @@ window.showDailyDetailsModal = (date) => {
             </table>
         `;
 
-  // モーダルを表示
   dailyDetailsModal.classList.remove('opacity-0', 'pointer-events-none');
   dailyDetailsModal.firstElementChild.classList.remove('scale-95');
-
-  // 現在の検索フィルターをモーダルにも適用
   applySearchFilter();
 }
 
-/**
- * 日別詳細モーダルを非表示にします。
- */
 window.hideDailyDetailsModal = () => {
   dailyDetailsModal.classList.add('opacity-0', 'pointer-events-none');
   dailyDetailsModal.firstElementChild.classList.add('scale-95');
 }
 
-/**
- * 期間集計モーダルを表示します。
- */
 window.showRangeSummaryModal = () => {
   rangeSummaryModal.classList.remove('opacity-0', 'pointer-events-none');
   rangeSummaryModal.firstElementChild.classList.remove('scale-95');
-  // 現在の検索フィルターをモーダルにも適用
   applySearchFilter();
 }
 
-/**
- * 期間集計モーダルを非表示にします。
- */
 window.hideRangeSummaryModal = () => {
   rangeSummaryModal.classList.add('opacity-0', 'pointer-events-none');
   rangeSummaryModal.firstElementChild.classList.add('scale-95');
