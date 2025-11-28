@@ -22,7 +22,8 @@ import {
 let db, auth, userId, appId, correctPasswordHash;
 let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
-let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ (Key: YYYY-MM-DD, Value: { activeUsers: number })
+let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ
+let globalProductMetadata = {}; // 商品別のアクティブユーザー数などのメタデータ (Key: productName, Value: { activeUsers: number })
 let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
@@ -672,6 +673,24 @@ async function loadCastData(castId) {
       console.warn("日別メタデータの読み込みに失敗 (初回はデータがない可能性があります):", e);
     }
 
+    // 商品別メタデータ（アクティブユーザー数など）の読み込み
+    globalProductMetadata = {};
+    try {
+      const productMetadataColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/productMetadata`);
+      const productMetadataSnapshot = await getDocs(productMetadataColRef);
+      productMetadataSnapshot.forEach(doc => {
+        // ドキュメントIDはハッシュ化されている可能性があるため、フィールドのproductNameをキーにするのが確実だが、
+        // 保存時にproductNameフィールドを含めている前提で処理する
+        const data = doc.data();
+        if (data.productName) {
+            globalProductMetadata[data.productName] = data;
+        }
+      });
+      console.log("商品別メタデータ読み込み完了:", Object.keys(globalProductMetadata).length, "件");
+    } catch (e) {
+      console.warn("商品別メタデータの読み込みに失敗 (初回はデータがない可能性があります):", e);
+    }
+
     console.log(`データ読み込み完了。${globalAllRecords.length}件の注文データを取得。`);
 
     if (globalAllRecords.length === 0) {
@@ -871,7 +890,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
 
   resultsContainer.innerHTML = `
             ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel)}
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="space-y-6"> <!-- 縦並びに変更: gridを削除しspace-yを使用 -->
                 ${createProductStatsTable(productStats)}
                 ${createDailyStatsTable(dailyStats)}
             </div>
@@ -916,33 +935,60 @@ function createProductStatsTable(productStats) {
 
   let tableRows = sortedProducts.map(([name, stats]) => {
     const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
+    
+    // 商品別のアクティブユーザー数を取得
+    const activeUsers = globalProductMetadata[name]?.activeUsers || '';
+    
+    // CVR計算 (購入者UU / アクティブユーザー * 100)
+    let cvrDisplay = '-';
+    if (activeUsers && activeUsers > 0) {
+        const purchaseUU = stats.uniqueUsers.size;
+        const cvr = (purchaseUU / activeUsers) * 100;
+        cvrDisplay = cvr.toFixed(2) + '%';
+    }
+    
+    // 商品名をエンコードして属性にセット（JSでの取得用）
+    const encodedName = btoa(unescape(encodeURIComponent(name)));
+
     return `
                 <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
-                    <td class="p-3 text-sm text-gray-700">${name}</td>
-                    <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
-                    <td class="p-3 text-right">${stats.uniqueUsers.size.toLocaleString()}</td>
-                    <td class="p-3 text-right">${avgPurchase.toFixed(2)}</td>
-                    <td class="p-3 text-right font-semibold text-green-600">${stats.revenue.toLocaleString()}円</td>
+                    <td class="p-3 text-sm text-gray-700 font-medium break-words max-w-xs">${name}</td>
+                    <td class="p-3 text-center" onclick="event.stopPropagation()">
+                        <input type="number" 
+                            class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm" 
+                            placeholder="UU入力" 
+                            value="${activeUsers}" 
+                            data-product-encoded="${encodedName}"
+                            onchange="window.saveProductActiveUsers(this)"
+                            min="0">
+                    </td>
+                    <td class="p-3 text-right text-sm font-medium">${stats.uniqueUsers.size.toLocaleString()}</td>
+                    <td class="p-3 text-right text-sm font-semibold text-blue-600">${cvrDisplay}</td>
+                    <td class="p-3 text-right text-sm">${stats.quantity.toLocaleString()}</td>
+                    <td class="p-3 text-right text-sm font-semibold text-green-600">${stats.revenue.toLocaleString()}円</td>
+                    <td class="p-3 text-right text-xs text-gray-500">${avgPurchase.toFixed(2)}</td>
                 </tr>
             `;
   }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="5" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="7" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">商品別レポート</h2>
-                <div class="overflow-x-auto max-h-[60vh]">
-                    <table id="productStatsTable" class="w-full min-w-[600px]">
-                        <thead class="bg-gray-50 sticky top-0">
+                <div class="overflow-x-auto max-h-[80vh]"> <!-- 縦並びにしたので高さを少し拡張 -->
+                    <table id="productStatsTable" class="w-full min-w-[800px]"> <!-- 横幅を確保 -->
+                        <thead class="bg-gray-50 sticky top-0 z-10">
                             <tr>
-                                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">商品名</th>
-                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
+                                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/3">商品名</th>
+                                <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">アクティブ<br>ユーザー</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者数</th>
-                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">平均/人</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">平均/人</th>
                             </tr>
                         </thead>
                         <tbody>${tableRows}</tbody>
@@ -983,7 +1029,7 @@ function createDailyStatsTable(dailyStats) {
                            onchange="window.saveActiveUsers('${date}', this.value)"
                            min="0">
                 </td>
-                <td class="p-3 text-right text-sm">${purchaseUU.toLocaleString()}</td>
+                <td class="p-3 text-right text-sm font-medium">${purchaseUU.toLocaleString()}</td>
                 <td class="p-3 text-right text-sm font-semibold text-blue-600">${cvrDisplay}</td>
                 <td class="p-3 text-right font-medium text-sm">${dailyStats[date].quantity.toLocaleString()}</td>
                 <td class="p-3 text-right font-semibold text-green-600 text-sm">${dailyStats[date].revenue.toLocaleString()}円</td>
@@ -998,9 +1044,9 @@ function createDailyStatsTable(dailyStats) {
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">日別レポート (クリックで詳細)</h2>
-                <div class="overflow-x-auto max-h-[60vh]">
-                    <table class="w-full">
-                        <thead class="bg-gray-50 sticky top-0">
+                <div class="overflow-x-auto max-h-[80vh]"> <!-- 縦並びにしたので高さを少し拡張 -->
+                    <table class="w-full min-w-[600px]">
+                        <thead class="bg-gray-50 sticky top-0 z-10">
                             <tr>
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">日付</th>
                                 <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">アクティブ<br>ユーザー</th>
@@ -1018,7 +1064,7 @@ function createDailyStatsTable(dailyStats) {
 }
 
 /**
- * アクティブユーザー数を保存し、CVRを再計算します。
+ * 日別アクティブユーザー数を保存し、CVRを再計算します。
  */
 window.saveActiveUsers = async (date, value) => {
   const numValue = parseInt(value, 10);
@@ -1052,6 +1098,56 @@ window.saveActiveUsers = async (date, value) => {
       alert("保存に失敗しました。");
   }
 };
+
+/**
+ * 商品別アクティブユーザー数を保存し、CVRを再計算します。
+ */
+window.saveProductActiveUsers = async (inputElement) => {
+  const value = inputElement.value;
+  const encodedName = inputElement.getAttribute('data-product-encoded');
+  // Base64デコード -> URIデコード で元の日本語商品名に戻す
+  const productName = decodeURIComponent(escape(atob(encodedName)));
+
+  const numValue = parseInt(value, 10);
+  
+  if (isNaN(numValue) || numValue < 0) {
+      if (value !== '') alert("有効な数値を入力してください");
+      return;
+  }
+
+  const companyGroupId = companyGroupSelector.value;
+  const castId = castSelector.value;
+  
+  if (!companyGroupId || !castId) return;
+
+  try {
+      // グローバルデータを即時更新
+      if (!globalProductMetadata[productName]) globalProductMetadata[productName] = {};
+      globalProductMetadata[productName].activeUsers = numValue;
+      
+      // ビューを更新
+      updateViewFromGlobalData();
+
+      // Firestoreに保存 (ドキュメントIDは安全のためハッシュ化した方が良いが、
+      // 読み込み時のマッピング簡易化のため今回はSHA-1ハッシュをIDとし、データ内に商品名を含める)
+      const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(productName));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const docId = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      const productMetaDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/productMetadata/${docId}`);
+      await setDoc(productMetaDocRef, { 
+          productName: productName,
+          activeUsers: numValue 
+      }, { merge: true });
+      
+      console.log(`商品「${productName}」のアクティブユーザー数を保存: ${numValue}`);
+
+  } catch (error) {
+      console.error("商品別アクティブユーザー数の保存に失敗:", error);
+      alert("保存に失敗しました。");
+  }
+};
+
 
 function displayError(message) {
   resultsContainer.innerHTML = `
