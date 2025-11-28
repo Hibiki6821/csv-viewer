@@ -18,6 +18,12 @@ import {
   getDocs // getDocs をインポート
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+// Chart.js のインポート (ES Module版)
+import { Chart, registerables } from "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/+esm";
+
+// Chart.js のコンポーネントを登録
+Chart.register(...registerables);
+
 // --- グローバル変数・定数 ---
 let db, auth, userId, appId, correctPasswordHash;
 let globalAllRecords = []; // フィルタリング前の全レコード
@@ -27,6 +33,7 @@ let globalProductMetadata = {}; // 商品別のアクティブユーザー数な
 let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
+let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
 
 // Chart.jsのインスタンス保持用
 let salesChartInstance = null;
@@ -654,7 +661,7 @@ async function loadCastData(castId) {
 
   try {
     const companyGroupId = companyGroupSelector.value;
-
+    
     // 注文データの読み込み
     const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
     const snapshot = await getDocs(ordersColRef);
@@ -663,7 +670,7 @@ async function loadCastData(castId) {
     snapshot.forEach(doc => {
       globalAllRecords.push(doc.data());
     });
-
+    
     // 日別メタデータ（アクティブユーザー数など）の読み込み
     globalDailyMetadata = {};
     try {
@@ -687,7 +694,7 @@ async function loadCastData(castId) {
         // 保存時にproductNameフィールドを含めている前提で処理する
         const data = doc.data();
         if (data.productName) {
-          globalProductMetadata[data.productName] = data;
+            globalProductMetadata[data.productName] = data;
         }
       });
       console.log("商品別メタデータ読み込み完了:", Object.keys(globalProductMetadata).length, "件");
@@ -773,7 +780,7 @@ function renderProductTypeTabs() {
  */
 function handleProductTypeChange(type) {
   currentProductTypeFilter = type;
-
+  
   // タブのスタイル更新
   const tabs = productTypeTabs.querySelectorAll('button');
   tabs.forEach(tab => {
@@ -894,7 +901,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
 
   resultsContainer.innerHTML = `
             ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel)}
-
+            
             <!-- グラフエリア (2カラム) -->
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
                 <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 lg:col-span-2">
@@ -919,10 +926,10 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
                 ${createDailyStatsTable(dailyStats)}
             </div>
         `;
-
+  
   // グラフ描画
   renderCharts(dailyStats);
-
+  
   // ユーザー分析描画
   renderUserAnalysis();
 
@@ -933,191 +940,188 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
  * グラフを描画します。
  */
 function renderCharts(dailyStats) {
-  // 1. 売上・CVR推移グラフ
-  const ctxSales = document.getElementById('salesChart').getContext('2d');
+    // 1. 売上・CVR推移グラフ
+    const ctxSales = document.getElementById('salesChart').getContext('2d');
+    
+    // 既存のチャートがあれば破棄
+    if (salesChartInstance) {
+        salesChartInstance.destroy();
+    }
 
-  // 既存のチャートがあれば破棄
-  if (salesChartInstance) {
-    salesChartInstance.destroy();
-  }
+    const sortedDates = Object.keys(dailyStats).sort();
+    const labels = sortedDates;
+    const revenueData = sortedDates.map(date => dailyStats[date].revenue);
+    const cvrData = sortedDates.map(date => {
+        const activeUsers = globalDailyMetadata[date]?.activeUsers || 0;
+        const purchaseUU = dailyStats[date].uniqueUsers.size;
+        return activeUsers > 0 ? (purchaseUU / activeUsers) * 100 : 0;
+    });
 
-  const sortedDates = Object.keys(dailyStats).sort();
-  const labels = sortedDates;
-  const revenueData = sortedDates.map(date => dailyStats[date].revenue);
-  const cvrData = sortedDates.map(date => {
-    const activeUsers = globalDailyMetadata[date]?.activeUsers || 0;
-    const purchaseUU = dailyStats[date].uniqueUsers.size;
-    return activeUsers > 0 ? (purchaseUU / activeUsers) * 100 : 0;
-  });
-
-  salesChartInstance = new Chart(ctxSales, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [
-        {
-          label: '売上 (円)',
-          data: revenueData,
-          backgroundColor: 'rgba(59, 130, 246, 0.5)', // blue-500
-          borderColor: 'rgb(59, 130, 246)',
-          borderWidth: 1,
-          yAxisID: 'y',
+    salesChartInstance = new Chart(ctxSales, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: '売上 (円)',
+                    data: revenueData,
+                    backgroundColor: 'rgba(59, 130, 246, 0.5)', // blue-500
+                    borderColor: 'rgb(59, 130, 246)',
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'CVR (%)',
+                    data: cvrData,
+                    type: 'line',
+                    borderColor: 'rgb(16, 185, 129)', // green-500
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    borderWidth: 2,
+                    yAxisID: 'y1',
+                    tension: 0.1
+                }
+            ]
         },
-        {
-          label: 'CVR (%)',
-          data: cvrData,
-          type: 'line',
-          borderColor: 'rgb(16, 185, 129)', // green-500
-          backgroundColor: 'rgba(16, 185, 129, 0.1)',
-          borderWidth: 2,
-          yAxisID: 'y1',
-          tension: 0.1
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: { display: true, text: '売上金額' }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: { display: true, text: 'CVR (%)' },
+                    grid: { drawOnChartArea: false }
+                }
+            }
         }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        y: {
-          type: 'linear',
-          display: true,
-          position: 'left',
-          title: { display: true, text: '売上金額' }
+    });
+
+    // 2. ジャンル別売上比率円グラフ
+    const ctxGenre = document.getElementById('genreChart').getContext('2d');
+    if (genreChartInstance) {
+        genreChartInstance.destroy();
+    }
+
+    // 期間フィルタの適用（商品タイプフィルタは無視して、ジャンル比率を出したい）
+    const now = new Date();
+    let startDate;
+    switch (currentSummaryPeriod) {
+        case 'monthly': startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
+        case 'weekly': startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
+        default: startDate = new Date('2000-01-01'); break;
+    }
+
+    const genreStats = {};
+    globalAllRecords.forEach(record => {
+        if (record.status === '取引完了') {
+            const orderDate = new Date(record.orderDate.split(' ')[0]);
+            if (orderDate >= startDate) {
+                const type = record.productType || '未分類';
+                if (!genreStats[type]) genreStats[type] = 0;
+                genreStats[type] += (record.price || 0);
+            }
+        }
+    });
+
+    const genreLabels = Object.keys(genreStats);
+    const genreData = Object.values(genreStats);
+    
+    // 色の生成
+    const backgroundColors = [
+        'rgba(255, 99, 132, 0.7)',
+        'rgba(54, 162, 235, 0.7)',
+        'rgba(255, 206, 86, 0.7)',
+        'rgba(75, 192, 192, 0.7)',
+        'rgba(153, 102, 255, 0.7)',
+        'rgba(255, 159, 64, 0.7)'
+    ];
+
+    genreChartInstance = new Chart(ctxGenre, {
+        type: 'doughnut',
+        data: {
+            labels: genreLabels,
+            datasets: [{
+                data: genreData,
+                backgroundColor: backgroundColors,
+                borderWidth: 1
+            }]
         },
-        y1: {
-          type: 'linear',
-          display: true,
-          position: 'right',
-          title: { display: true, text: 'CVR (%)' },
-          grid: { drawOnChartArea: false }
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                }
+            }
         }
-      }
-    }
-  });
-
-  // 2. ジャンル別売上比率円グラフ
-  // 全期間のデータから集計（現在のフィルタに関わらず全体像を見せるため、もしくは現在のフィルタ内の内訳か。
-  // ここでは「現在のフィルタ（期間含む）内の内訳」を表示するのが自然だが、
-  // 商品タイプフィルタが「すべて」以外の時は円グラフが1色になる。
-  // なので、currentProductTypeFilterが'all'のときのみ意味があるが、あえて表示する。
-
-  // 集計ロジック: dailyStatsは既にフィルタ済みなので、そこから再集計するのは難しい（商品情報が丸められているため）。
-  // なので、globalAllRecordsを使って、現在の「期間」フィルタだけ適用したデータで集計する。
-
-  const ctxGenre = document.getElementById('genreChart').getContext('2d');
-  if (genreChartInstance) {
-    genreChartInstance.destroy();
-  }
-
-  // 期間フィルタの適用（商品タイプフィルタは無視して、ジャンル比率を出したい）
-  const now = new Date();
-  let startDate;
-  switch (currentSummaryPeriod) {
-    case 'monthly': startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-    case 'weekly': startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-    default: startDate = new Date('2000-01-01'); break;
-  }
-
-  const genreStats = {};
-  globalAllRecords.forEach(record => {
-    if (record.status === '取引完了') {
-      const orderDate = new Date(record.orderDate.split(' ')[0]);
-      if (orderDate >= startDate) {
-        const type = record.productType || '未分類';
-        if (!genreStats[type]) genreStats[type] = 0;
-        genreStats[type] += (record.price || 0);
-      }
-    }
-  });
-
-  const genreLabels = Object.keys(genreStats);
-  const genreData = Object.values(genreStats);
-
-  // 色の生成
-  const backgroundColors = [
-    'rgba(255, 99, 132, 0.7)',
-    'rgba(54, 162, 235, 0.7)',
-    'rgba(255, 206, 86, 0.7)',
-    'rgba(75, 192, 192, 0.7)',
-    'rgba(153, 102, 255, 0.7)',
-    'rgba(255, 159, 64, 0.7)'
-  ];
-
-  genreChartInstance = new Chart(ctxGenre, {
-    type: 'doughnut',
-    data: {
-      labels: genreLabels,
-      datasets: [{
-        data: genreData,
-        backgroundColor: backgroundColors,
-        borderWidth: 1
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: 'bottom'
-        }
-      }
-    }
-  });
+    });
 }
 
 /**
  * ユーザー分析機能を描画します。
  */
 function renderUserAnalysis() {
-  // 現在のフィルタ（期間・商品タイプ）適用済みのレコードを対象にする
-  let targetRecords = globalAllRecords;
-
-  // 1. 商品タイプフィルタ
-  if (currentProductTypeFilter !== 'all') {
-    targetRecords = targetRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
-  }
-
-  // 2. 期間フィルタ
-  const now = new Date();
-  let startDate;
-  switch (currentSummaryPeriod) {
-    case 'monthly': startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-    case 'weekly': startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-    default: startDate = new Date('2000-01-01'); break;
-  }
-
-  const userStats = {};
-  targetRecords.forEach(record => {
-    if (record.status === '取引完了') {
-      const orderDate = new Date(record.orderDate.split(' ')[0]);
-      if (orderDate >= startDate) {
-        const uid = record.userId;
-        if (!userStats[uid]) {
-          userStats[uid] = { totalRevenue: 0, count: 0, lastOrderDate: orderDate };
-        }
-        userStats[uid].totalRevenue += (record.price || 0);
-        userStats[uid].count += 1;
-        if (orderDate > userStats[uid].lastOrderDate) {
-          userStats[uid].lastOrderDate = orderDate;
-        }
-      }
+    // 現在のフィルタ（期間・商品タイプ）適用済みのレコードを対象にする
+    let targetRecords = globalAllRecords;
+    
+    // 1. 商品タイプフィルタ
+    if (currentProductTypeFilter !== 'all') {
+        targetRecords = targetRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
     }
-  });
 
-  // 配列に変換してソート（売上順）
-  const sortedUsers = Object.entries(userStats)
-    .map(([uid, stat]) => ({ uid, ...stat }))
-    .sort((a, b) => b.totalRevenue - a.totalRevenue)
-    .slice(0, 10); // 上位10名を表示
+    // 2. 期間フィルタ
+    const now = new Date();
+    let startDate;
+    switch (currentSummaryPeriod) {
+        case 'monthly': startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
+        case 'weekly': startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
+        default: startDate = new Date('2000-01-01'); break;
+    }
 
-  // リピーター分析
-  const allUserCount = Object.keys(userStats).length;
-  const repeaters = Object.values(userStats).filter(u => u.count > 1).length;
-  const repeaterRate = allUserCount > 0 ? ((repeaters / allUserCount) * 100).toFixed(1) : 0;
+    const userStats = {};
+    targetRecords.forEach(record => {
+        const price = record.price || 0;
+        // includeFreeProductsInAnalysis フラグに基づいてフィルタリング
+        // trueなら price >= 0 (すべてOK)、falseなら price > 0 (有料のみ)
+        const isTargetPrice = includeFreeProductsInAnalysis ? true : price > 0;
 
-  // HTML生成
-  const userTableRows = sortedUsers.map((user, index) => `
+        if (record.status === '取引完了' && isTargetPrice) {
+            const orderDate = new Date(record.orderDate.split(' ')[0]);
+            if (orderDate >= startDate) {
+                const uid = record.userId;
+                if (!userStats[uid]) {
+                    userStats[uid] = { totalRevenue: 0, count: 0, lastOrderDate: orderDate };
+                }
+                userStats[uid].totalRevenue += price;
+                userStats[uid].count += 1;
+                if (orderDate > userStats[uid].lastOrderDate) {
+                    userStats[uid].lastOrderDate = orderDate;
+                }
+            }
+        }
+    });
+
+    // 配列に変換してソート（売上順）
+    const sortedUsers = Object.entries(userStats)
+        .map(([uid, stat]) => ({ uid, ...stat }))
+        .sort((a, b) => b.totalRevenue - a.totalRevenue)
+        .slice(0, 10); // 上位10名を表示
+
+    // リピーター分析
+    const allUserCount = Object.keys(userStats).length; // 対象商品を1回以上購入したユーザー数
+    const repeaters = Object.values(userStats).filter(u => u.count > 1).length; // 対象商品を2回以上購入したユーザー数
+    const repeaterRate = allUserCount > 0 ? ((repeaters / allUserCount) * 100).toFixed(1) : 0;
+
+    // HTML生成
+    const userTableRows = sortedUsers.map((user, index) => `
         <tr class="border-b border-gray-100 hover:bg-gray-50">
             <td class="p-2 text-center font-bold text-gray-500">#${index + 1}</td>
             <td class="p-2 text-sm text-gray-700 font-mono">${user.uid}</td>
@@ -1126,17 +1130,30 @@ function renderUserAnalysis() {
         </tr>
     `).join('');
 
-  const userAnalysisHTML = `
+    const userAnalysisHTML = `
         <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 mb-6">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-bold text-gray-800">ユーザー分析</h2>
-                <div class="bg-blue-50 px-4 py-2 rounded-lg">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
+                <div>
+                    <h2 class="text-lg font-bold text-gray-800 flex items-center">
+                        ユーザー分析
+                        <span class="text-xs font-normal text-gray-500 ml-2 py-0.5 px-2 bg-gray-100 rounded-full">
+                            ${includeFreeProductsInAnalysis ? '無料商品含む' : '有料商品のみ'}
+                        </span>
+                    </h2>
+                    <div class="flex items-center mt-2">
+                        <input id="includeFreeCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" ${includeFreeProductsInAnalysis ? 'checked' : ''} onchange="window.toggleFreeProductsInAnalysis(this.checked)">
+                        <label for="includeFreeCheckbox" class="ml-2 text-sm text-gray-600 cursor-pointer select-none">無料商品の購入者を含める</label>
+                    </div>
+                </div>
+                <div class="bg-blue-50 px-4 py-2 rounded-lg self-stretch sm:self-auto text-center sm:text-right">
                     <span class="text-sm text-gray-600 mr-2">リピーター率:</span>
                     <span class="text-lg font-bold text-blue-600">${repeaterRate}%</span>
-                    <span class="text-xs text-gray-500 ml-1">(${repeaters}/${allUserCount})</span>
+                    <div class="text-xs text-gray-500 mt-1">
+                        (${repeaters} / ${allUserCount} 人)
+                    </div>
                 </div>
             </div>
-
+            
             <div class="overflow-x-auto">
                 <h3 class="text-sm font-semibold text-gray-500 mb-2">トップファンランキング (売上上位10名)</h3>
                 <table class="w-full">
@@ -1156,7 +1173,15 @@ function renderUserAnalysis() {
         </div>
     `;
 
-  document.getElementById('userAnalysisArea').innerHTML = userAnalysisHTML;
+    document.getElementById('userAnalysisArea').innerHTML = userAnalysisHTML;
+}
+
+/**
+ * ユーザー分析の無料商品含めるフラグを切り替えます。
+ */
+window.toggleFreeProductsInAnalysis = (checked) => {
+    includeFreeProductsInAnalysis = checked;
+    renderUserAnalysis();
 }
 
 /**
@@ -1196,18 +1221,18 @@ function createProductStatsTable(productStats) {
 
   let tableRows = sortedProducts.map(([name, stats]) => {
     const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
-
+    
     // 商品別のアクティブユーザー数を取得
     const activeUsers = globalProductMetadata[name]?.activeUsers || '';
-
+    
     // CVR計算 (購入者UU / アクティブユーザー * 100)
     let cvrDisplay = '-';
     if (activeUsers && activeUsers > 0) {
-      const purchaseUU = stats.uniqueUsers.size;
-      const cvr = (purchaseUU / activeUsers) * 100;
-      cvrDisplay = cvr.toFixed(2) + '%';
+        const purchaseUU = stats.uniqueUsers.size;
+        const cvr = (purchaseUU / activeUsers) * 100;
+        cvrDisplay = cvr.toFixed(2) + '%';
     }
-
+    
     // 商品名をエンコードして属性にセット（JSでの取得用）
     const encodedName = btoa(unescape(encodeURIComponent(name)));
 
@@ -1215,11 +1240,11 @@ function createProductStatsTable(productStats) {
                 <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
                     <td class="p-3 text-sm text-gray-700 font-medium break-words max-w-xs">${name}</td>
                     <td class="p-3 text-center" onclick="event.stopPropagation()">
-                        <input type="number"
-                            class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm"
-                            placeholder="UU入力"
+                        <input type="number" 
+                            class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm" 
+                            placeholder="UU入力" 
                             autocomplete="off"
-                            value="${activeUsers}"
+                            value="${activeUsers}" 
                             data-product-encoded="${encodedName}"
                             onchange="window.saveProductActiveUsers(this)"
                             min="0">
@@ -1272,23 +1297,23 @@ function createDailyStatsTable(dailyStats) {
     const activeUsers = globalDailyMetadata[date]?.activeUsers || '';
     // 購入者UU数
     const purchaseUU = dailyStats[date].uniqueUsers.size;
-
+    
     // CVR計算 (購入UU / アクティブユーザー * 100)
     let cvrDisplay = '-';
     if (activeUsers && activeUsers > 0) {
-      const cvr = (purchaseUU / activeUsers) * 100;
-      cvrDisplay = cvr.toFixed(2) + '%';
+        const cvr = (purchaseUU / activeUsers) * 100;
+        cvrDisplay = cvr.toFixed(2) + '%';
     }
 
     return `
             <tr class="border-b border-gray-200 hover:bg-gray-50 cursor-pointer" onclick="window.showDailyDetailsModal('${date}')">
                 <td class="p-3 text-sm text-gray-700 whitespace-nowrap">${date}</td>
                 <td class="p-3 text-center" onclick="event.stopPropagation()">
-                    <input type="number"
-                           class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm"
-                           placeholder="UU入力"
+                    <input type="number" 
+                           class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm" 
+                           placeholder="UU入力" 
                            autocomplete="off"
-                           value="${activeUsers}"
+                           value="${activeUsers}" 
                            onchange="window.saveActiveUsers('${date}', this.value)"
                            min="0">
                 </td>
@@ -1331,34 +1356,34 @@ function createDailyStatsTable(dailyStats) {
  */
 window.saveActiveUsers = async (date, value) => {
   const numValue = parseInt(value, 10);
-
+  
   if (isNaN(numValue) || numValue < 0) {
-    if (value !== '') alert("有効な数値を入力してください");
-    return;
+      if (value !== '') alert("有効な数値を入力してください");
+      return;
   }
 
   const companyGroupId = companyGroupSelector.value;
   const castId = castSelector.value;
-
+  
   if (!companyGroupId || !castId) return;
 
   try {
-    // グローバルデータを即時更新してUIに反映（UX向上）
-    if (!globalDailyMetadata[date]) globalDailyMetadata[date] = {};
-    globalDailyMetadata[date].activeUsers = numValue;
+      // グローバルデータを即時更新してUIに反映（UX向上）
+      if (!globalDailyMetadata[date]) globalDailyMetadata[date] = {};
+      globalDailyMetadata[date].activeUsers = numValue;
+      
+      // ビューを更新 (CVR再計算のため)
+      updateViewFromGlobalData();
 
-    // ビューを更新 (CVR再計算のため)
-    updateViewFromGlobalData();
-
-    // Firestoreに保存
-    const metadataDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/dailyMetadata/${date}`);
-    await setDoc(metadataDocRef, { activeUsers: numValue }, { merge: true });
-
-    console.log(`${date} のアクティブユーザー数を保存: ${numValue}`);
+      // Firestoreに保存
+      const metadataDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/dailyMetadata/${date}`);
+      await setDoc(metadataDocRef, { activeUsers: numValue }, { merge: true });
+      
+      console.log(`${date} のアクティブユーザー数を保存: ${numValue}`);
 
   } catch (error) {
-    console.error("アクティブユーザー数の保存に失敗:", error);
-    alert("保存に失敗しました。");
+      console.error("アクティブユーザー数の保存に失敗:", error);
+      alert("保存に失敗しました。");
   }
 };
 
@@ -1372,42 +1397,42 @@ window.saveProductActiveUsers = async (inputElement) => {
   const productName = decodeURIComponent(escape(atob(encodedName)));
 
   const numValue = parseInt(value, 10);
-
+  
   if (isNaN(numValue) || numValue < 0) {
-    if (value !== '') alert("有効な数値を入力してください");
-    return;
+      if (value !== '') alert("有効な数値を入力してください");
+      return;
   }
 
   const companyGroupId = companyGroupSelector.value;
   const castId = castSelector.value;
-
+  
   if (!companyGroupId || !castId) return;
 
   try {
-    // グローバルデータを即時更新
-    if (!globalProductMetadata[productName]) globalProductMetadata[productName] = {};
-    globalProductMetadata[productName].activeUsers = numValue;
+      // グローバルデータを即時更新
+      if (!globalProductMetadata[productName]) globalProductMetadata[productName] = {};
+      globalProductMetadata[productName].activeUsers = numValue;
+      
+      // ビューを更新
+      updateViewFromGlobalData();
 
-    // ビューを更新
-    updateViewFromGlobalData();
+      // Firestoreに保存 (ドキュメントIDは安全のためハッシュ化した方が良いが、
+      // 読み込み時のマッピング簡易化のため今回はSHA-1ハッシュをIDとし、データ内に商品名を含める)
+      const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(productName));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const docId = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-    // Firestoreに保存 (ドキュメントIDは安全のためハッシュ化した方が良いが、
-    // 読み込み時のマッピング簡易化のため今回はSHA-1ハッシュをIDとし、データ内に商品名を含める)
-    const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(productName));
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const docId = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
-    const productMetaDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/productMetadata/${docId}`);
-    await setDoc(productMetaDocRef, {
-      productName: productName,
-      activeUsers: numValue
-    }, { merge: true });
-
-    console.log(`商品「${productName}」のアクティブユーザー数を保存: ${numValue}`);
+      const productMetaDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/productMetadata/${docId}`);
+      await setDoc(productMetaDocRef, { 
+          productName: productName,
+          activeUsers: numValue 
+      }, { merge: true });
+      
+      console.log(`商品「${productName}」のアクティブユーザー数を保存: ${numValue}`);
 
   } catch (error) {
-    console.error("商品別アクティブユーザー数の保存に失敗:", error);
-    alert("保存に失敗しました。");
+      console.error("商品別アクティブユーザー数の保存に失敗:", error);
+      alert("保存に失敗しました。");
   }
 };
 
@@ -1560,14 +1585,14 @@ function applySearchFilter() {
       }
     }
   }
-
+    
   const rangeModalTable = document.getElementById('modalRangeProductStatsTable');
   if (rangeModalTable && !rangeSummaryModal.classList.contains('opacity-0')) {
     const modalRows = rangeModalTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
     for (const row of modalRows) {
       const name = row.dataset.searchName;
       if (name) {
-        row.style.display = name.includes(query) ? '' : 'none';
+         row.style.display = name.includes(query) ? '' : 'none';
       }
     }
   }
