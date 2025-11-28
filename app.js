@@ -18,12 +18,6 @@ import {
   getDocs // getDocs をインポート
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-// Chart.js のインポート (ES Module版)
-import { Chart, registerables } from "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/+esm";
-
-// Chart.js のコンポーネントを登録
-Chart.register(...registerables);
-
 // --- グローバル変数・定数 ---
 let db, auth, userId, appId, correctPasswordHash;
 let globalAllRecords = []; // フィルタリング前の全レコード
