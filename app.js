@@ -18,6 +18,9 @@ import {
   getDocs // getDocs をインポート
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+// Chart.js は index.html で読み込んでいるため、import は不要
+// グローバル変数 Chart をそのまま使用します
+
 // --- グローバル変数・定数 ---
 let db, auth, userId, appId, correctPasswordHash;
 let globalAllRecords = []; // フィルタリング前の全レコード
