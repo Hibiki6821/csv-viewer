@@ -14,8 +14,7 @@ import {
   onSnapshot,
   writeBatch,
   query,
-  setLogLevel,
-  getDocs // getDocs をインポート
+  getDocs // setLogLevel は削除したよん！
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Chart.js は index.html で読み込んでいるため、import は不要
@@ -162,13 +161,13 @@ async function initializeMainApp() {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-    setLogLevel('Debug');
+    // setLogLevel('Debug'); // ← デバッグログが出ちゃうので削除したよ！
 
     // 3. 認証状態の監視
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         userId = user.uid;
-        console.log("Firebase 認証成功. UserID:", userId);
+        console.log("Firebase 認証成功.");
 
         try {
           const passDocRef = doc(db, `artifacts/${appId}/public/data/config/password`);
@@ -176,7 +175,7 @@ async function initializeMainApp() {
 
           if (passDocSnap.exists()) {
             correctPasswordHash = passDocSnap.data().hash;
-            console.log("パスワードの取得成功。");
+            // console.log("パスワードの取得成功。"); // 念のためログ出力を削除
 
             if (getCookie('auth_token_lottery_analyzer') === correctPasswordHash) {
               showMainContentAndInitApp();
@@ -1474,7 +1473,7 @@ function handleRangeSummary() {
   let rangeTotalRevenue = 0;
   let rangeTotalQuantity = 0;
   const rangeProductStats = {};
-  const uniqueUsers = new Set();
+  const uniqueUsers = new Set(); // 全体のユニークユーザー数
 
   for (const record of targetRecords) {
     if (record.status === '取引完了') {
@@ -1486,10 +1485,15 @@ function handleRangeSummary() {
 
         const productName = record.productName;
         if (!rangeProductStats[productName]) {
-          rangeProductStats[productName] = { quantity: 0, revenue: 0 };
+          rangeProductStats[productName] = { 
+              quantity: 0, 
+              revenue: 0,
+              uniqueUsers: new Set() // 商品ごとのユニークユーザー数
+          };
         }
         rangeProductStats[productName].quantity += (record.quantity || 0);
         rangeProductStats[productName].revenue += (record.price || 0);
+        rangeProductStats[productName].uniqueUsers.add(record.userId);
       }
     }
   }
@@ -1526,28 +1530,41 @@ function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurch
 
   const sortedProducts = Object.entries(rangeProductStats).sort(([, a], [, b]) => b.revenue - a.revenue);
 
-  const productRows = sortedProducts.map(([name, stats]) => `
+  // くじ対応: 単価、UU、販売個数、売上を表示
+  const productRows = sortedProducts.map(([name, stats]) => {
+     // 単価（平均） = 売上 / 販売個数
+     const unitPrice = stats.quantity > 0 ? Math.round(stats.revenue / stats.quantity) : 0;
+     const purchaseUU = stats.uniqueUsers.size;
+
+     return `
              <tr class="border-t border-gray-200" data-search-name="${name.toLowerCase()}">
-                 <td class="p-3 text-sm text-gray-600">${name}</td>
+                 <td class="p-3 text-sm text-gray-600 break-words max-w-xs">${name}</td>
+                 <td class="p-3 text-right text-sm text-gray-800">${unitPrice.toLocaleString()}円</td>
+                 <td class="p-3 text-right text-sm font-medium text-blue-600">${purchaseUU.toLocaleString()}人</td>
                  <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
-                 <td class="p-3 text-right text-green-600">${stats.revenue.toLocaleString()}円</td>
+                 <td class="p-3 text-right text-green-600 font-bold">${stats.revenue.toLocaleString()}円</td>
              </tr>
-         `).join('');
+         `;
+  }).join('');
 
   modalHTML += `
-             <h3 class="text-lg font-bold text-gray-800 mb-3">期間中の商品別売上</h3>
-             <table id="modalRangeProductStatsTable" class="w-full text-sm">
-                 <thead class="border-b">
-                     <tr>
-                         <th class="pb-2 text-left font-semibold text-gray-600">商品名</th>
-                         <th class="pb-2 text-right font-semibold text-gray-600">販売個数</th>
-                         <th class="pb-2 text-right font-semibold text-gray-600">売上</th>
-                     </tr>
-                 </thead>
-                 <tbody>
-                     ${productRows.length > 0 ? productRows : '<tr><td colspan="3" class="text-center p-4 text-gray-500">該当期間にデータはありません。</td></tr>'}
-                 </tbody>
-             </table>
+             <h3 class="text-lg font-bold text-gray-800 mb-3">期間中の商品別売上詳細</h3>
+             <div class="overflow-x-auto">
+                <table id="modalRangeProductStatsTable" class="w-full text-sm">
+                    <thead class="border-b bg-gray-50">
+                        <tr>
+                            <th class="p-3 text-left font-semibold text-gray-600 w-1/3">商品名</th>
+                            <th class="p-3 text-right font-semibold text-gray-600">単価(平均)</th>
+                            <th class="p-3 text-right font-semibold text-gray-600">購入者数(UU)</th>
+                            <th class="p-3 text-right font-semibold text-gray-600">販売個数</th>
+                            <th class="p-3 text-right font-semibold text-gray-600">売上</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${productRows.length > 0 ? productRows : '<tr><td colspan="5" class="text-center p-4 text-gray-500">該当期間にデータはありません。</td></tr>'}
+                    </tbody>
+                </table>
+             </div>
         `;
 
   rangeModalBody.innerHTML = modalHTML;
