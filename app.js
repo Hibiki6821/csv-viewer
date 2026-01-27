@@ -14,7 +14,7 @@ import {
   onSnapshot,
   writeBatch,
   query,
-  getDocs // setLogLevel は削除したよん！
+  getDocs
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Chart.js は index.html で読み込んでいるため、import は不要
@@ -161,7 +161,6 @@ async function initializeMainApp() {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-    // setLogLevel('Debug'); // ← デバッグログが出ちゃうので削除したよ！
 
     // 3. 認証状態の監視
     onAuthStateChanged(auth, async (user) => {
@@ -175,7 +174,6 @@ async function initializeMainApp() {
 
           if (passDocSnap.exists()) {
             correctPasswordHash = passDocSnap.data().hash;
-            // console.log("パスワードの取得成功。"); // 念のためログ出力を削除
 
             if (getCookie('auth_token_lottery_analyzer') === correctPasswordHash) {
               showMainContentAndInitApp();
@@ -1500,29 +1498,61 @@ function handleRangeSummary() {
 
   const userCount = uniqueUsers.size;
   const avgPurchasePerUser = userCount > 0 ? (rangeTotalQuantity / userCount).toFixed(2) : '0.00';
+  
+  // 新規追加項目の計算
+  const uniqueProductCount = Object.keys(rangeProductStats).length;
+  
+  // 期間商品平均購入者数 (各商品のUU合計 / 商品数)
+  let totalProductUsers = 0;
+  Object.values(rangeProductStats).forEach(stat => {
+      totalProductUsers += stat.uniqueUsers.size;
+  });
+  const avgProductUsers = uniqueProductCount > 0 ? (totalProductUsers / uniqueProductCount).toFixed(2) : '0.00';
 
-  updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats);
+  updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats, userCount, uniqueProductCount, avgProductUsers);
 }
 
 
-function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats) {
+function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurchasePerUser, rangeProductStats, userCount, uniqueProductCount, avgProductUsers) {
   let genreText = currentProductTypeFilter === 'all' ? '' : `<span class="text-sm font-normal ml-2">(${currentProductTypeFilter})</span>`;
 
+  // スプシ用コピー文字列の生成 (タブ区切り)
+  // 順番: 売上、販売個数、平均購入数、合計購入者数、商品数、商品平均購入者数
+  const copyText = `${rangeTotalRevenue}\t${rangeTotalQuantity}\t${avgPurchasePerUser}\t${userCount}\t${uniqueProductCount}\t${avgProductUsers}`;
+
   let modalHTML = `
-             <div class="bg-blue-50 rounded-lg p-4 mb-6">
-                 <h3 class="text-lg font-bold text-gray-800 mb-3">期間サマリー${genreText}</h3>
-                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-                     <div>
-                         <p class="text-sm text-gray-500">期間売上金額</p>
-                         <p class="text-2xl font-semibold text-blue-600">${rangeTotalRevenue.toLocaleString()}円</p>
+             <div class="bg-blue-50 rounded-lg p-4 mb-6 relative">
+                 <div class="flex justify-between items-start mb-3">
+                    <h3 class="text-lg font-bold text-gray-800">期間サマリー${genreText}</h3>
+                    <button onclick="window.copyToClipboard('${copyText}')" class="text-xs bg-white hover:bg-gray-100 text-blue-600 font-semibold py-1 px-3 border border-blue-200 rounded shadow-sm transition-colors flex items-center gap-1">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        スプシ用にコピー
+                    </button>
+                 </div>
+                 <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center">
+                     <div class="bg-white p-2 rounded shadow-sm">
+                         <p class="text-xs text-gray-500">期間売上金額</p>
+                         <p class="text-xl font-semibold text-blue-600">${rangeTotalRevenue.toLocaleString()}円</p>
                      </div>
-                     <div>
-                         <p class="text-sm text-gray-500">期間販売個数</p>
-                         <p class="text-2xl font-semibold text-blue-600">${rangeTotalQuantity.toLocaleString()}個</p>
+                     <div class="bg-white p-2 rounded shadow-sm">
+                         <p class="text-xs text-gray-500">期間販売個数</p>
+                         <p class="text-xl font-semibold text-blue-600">${rangeTotalQuantity.toLocaleString()}個</p>
                      </div>
-                     <div>
-                         <p class="text-sm text-gray-500">一人当たり平均購入数</p>
-                         <p class="text-2xl font-semibold text-blue-600">${avgPurchasePerUser}個</p>
+                     <div class="bg-white p-2 rounded shadow-sm">
+                         <p class="text-xs text-gray-500">平均購入数/人</p>
+                         <p class="text-xl font-semibold text-blue-600">${avgPurchasePerUser}個</p>
+                     </div>
+                     <div class="bg-white p-2 rounded shadow-sm">
+                         <p class="text-xs text-gray-500">合計購入者数(UU)</p>
+                         <p class="text-xl font-semibold text-blue-600">${userCount.toLocaleString()}人</p>
+                     </div>
+                     <div class="bg-white p-2 rounded shadow-sm">
+                         <p class="text-xs text-gray-500">商品数</p>
+                         <p class="text-xl font-semibold text-blue-600">${uniqueProductCount}種類</p>
+                     </div>
+                     <div class="bg-white p-2 rounded shadow-sm">
+                         <p class="text-xs text-gray-500">商品平均購入者数</p>
+                         <p class="text-xl font-semibold text-blue-600">${avgProductUsers}人</p>
                      </div>
                  </div>
              </div>
@@ -1569,6 +1599,28 @@ function updateRangeSummaryModal(rangeTotalRevenue, rangeTotalQuantity, avgPurch
 
   rangeModalBody.innerHTML = modalHTML;
   showRangeSummaryModal();
+}
+
+/**
+ * クリップボードにテキストをコピーする関数
+ */
+window.copyToClipboard = (text) => {
+    // 隠しtextareaを作ってコピーする（iframe対策）
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed'; // 画面外に飛ばす
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        alert('スプレッドシート形式でコピーしました！\n（タブ区切りテキスト）');
+    } catch (err) {
+        console.error('コピーに失敗しました', err);
+        alert('コピーに失敗しました');
+    } finally {
+        document.body.removeChild(textarea);
+    }
 }
 
 /**
@@ -1646,7 +1698,7 @@ window.showDailyDetailsModal = (date) => {
                     ${productRows}
                 </tbody>
             </table>
-        `;
+        `
 
   dailyDetailsModal.classList.remove('opacity-0', 'pointer-events-none');
   dailyDetailsModal.firstElementChild.classList.remove('scale-95');
