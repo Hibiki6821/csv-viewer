@@ -56,7 +56,9 @@ let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGr
   rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
   rangeSummaryModal, rangeModalTitle, rangeModalBody,
   summaryAllButton, summaryMonthlyButton, summaryWeeklyButton,
-  productTypeFilterContainer, productTypeTabs;
+  productTypeFilterContainer, productTypeTabs,
+  // ★追加: 期間指定レポート用のフィルターチェックボックス
+  excludeFreeRangeCheckbox, exclude100YenRangeCheckbox;
 
 /**
  * Cookieを設定します。
@@ -122,6 +124,10 @@ function showMainContentAndInitApp() {
   summaryWeeklyButton = document.getElementById('summaryWeeklyButton');
   productTypeFilterContainer = document.getElementById('productTypeFilterContainer');
   productTypeTabs = document.getElementById('productTypeTabs');
+  
+  // ★追加: チェックボックスの取得
+  excludeFreeRangeCheckbox = document.getElementById('excludeFreeRangeCheckbox');
+  exclude100YenRangeCheckbox = document.getElementById('exclude100YenRangeCheckbox');
 
   // メインコンテンツのイベントリスナーを設定
   setupEventListeners();
@@ -351,6 +357,10 @@ function enableCastManagement() {
 
   rangeStartDateInput.disabled = false;
   rangeEndDateInput.disabled = false;
+  // ★追加: フィルター用チェックボックスも有効化
+  if (excludeFreeRangeCheckbox) excludeFreeRangeCheckbox.disabled = false;
+  if (exclude100YenRangeCheckbox) exclude100YenRangeCheckbox.disabled = false;
+  
   rangeSummaryButton.disabled = false;
 }
 
@@ -1467,6 +1477,10 @@ function handleRangeSummary() {
     targetRecords = globalAllRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
   }
 
+  // ★追加: チェックボックスの状態を取得
+  const excludeFree = document.getElementById('excludeFreeRangeCheckbox').checked;
+  const exclude100Yen = document.getElementById('exclude100YenRangeCheckbox').checked;
+
   // 2. その中から期間で集計
   let rangeTotalRevenue = 0;
   let rangeTotalQuantity = 0;
@@ -1477,7 +1491,14 @@ function handleRangeSummary() {
     if (record.status === '取引完了') {
       const orderDate = new Date(record.orderDate.split(' ')[0]);
       if (orderDate >= startDate && orderDate <= endDate) {
-        rangeTotalRevenue += record.price || 0;
+        
+        const price = record.price || 0;
+
+        // ★追加: フィルタリング判定
+        if (excludeFree && price === 0) continue;
+        if (exclude100Yen && price === 100) continue;
+
+        rangeTotalRevenue += price;
         rangeTotalQuantity += record.quantity || 0;
         uniqueUsers.add(record.userId);
 
@@ -1490,7 +1511,7 @@ function handleRangeSummary() {
           };
         }
         rangeProductStats[productName].quantity += (record.quantity || 0);
-        rangeProductStats[productName].revenue += (record.price || 0);
+        rangeProductStats[productName].revenue += price;
         rangeProductStats[productName].uniqueUsers.add(record.userId);
       }
     }
