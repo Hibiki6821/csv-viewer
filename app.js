@@ -57,7 +57,8 @@ let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGr
   rangeSummaryModal, rangeModalTitle, rangeModalBody,
   summaryAllButton, summaryMonthlyButton, summaryWeeklyButton,
   productTypeFilterContainer, productTypeTabs,
-  excludeFreeRangeCheckbox, exclude100YenRangeCheckbox;
+  excludeFreeRangeCheckbox, exclude100YenRangeCheckbox,
+  enableComparisonCheckbox, comparisonSettingsArea, comparisonModeSelector, customComparisonDates, comparisonStartDate, comparisonEndDate;
 
 /**
  * Cookieを設定します。
@@ -126,6 +127,14 @@ function showMainContentAndInitApp() {
   
   excludeFreeRangeCheckbox = document.getElementById('excludeFreeRangeCheckbox');
   exclude100YenRangeCheckbox = document.getElementById('exclude100YenRangeCheckbox');
+  
+  // 比較機能用DOM
+  enableComparisonCheckbox = document.getElementById('enableComparisonCheckbox');
+  comparisonSettingsArea = document.getElementById('comparisonSettingsArea');
+  comparisonModeSelector = document.getElementById('comparisonModeSelector');
+  customComparisonDates = document.getElementById('customComparisonDates');
+  comparisonStartDate = document.getElementById('comparisonStartDate');
+  comparisonEndDate = document.getElementById('comparisonEndDate');
 
   // メインコンテンツのイベントリスナーを設定
   setupEventListeners();
@@ -297,6 +306,7 @@ function setupEventListeners() {
       rangeStartDateInput.disabled = true;
       rangeEndDateInput.disabled = true;
       rangeSummaryButton.disabled = true;
+      enableComparisonCheckbox.disabled = true;
     }
   });
 
@@ -312,6 +322,23 @@ function setupEventListeners() {
   summaryAllButton.addEventListener('click', () => handleSummaryPeriodChange('all'));
   summaryMonthlyButton.addEventListener('click', () => handleSummaryPeriodChange('monthly'));
   summaryWeeklyButton.addEventListener('click', () => handleSummaryPeriodChange('weekly'));
+  
+  // 比較機能のUI制御
+  enableComparisonCheckbox.addEventListener('change', (e) => {
+     if (e.target.checked) {
+         comparisonSettingsArea.classList.remove('hidden');
+     } else {
+         comparisonSettingsArea.classList.add('hidden');
+     }
+  });
+  
+  comparisonModeSelector.addEventListener('change', (e) => {
+     if (e.target.value === 'custom') {
+         customComparisonDates.classList.remove('hidden');
+     } else {
+         customComparisonDates.classList.add('hidden');
+     }
+  });
 }
 
 /**
@@ -358,6 +385,7 @@ function enableCastManagement() {
   if (excludeFreeRangeCheckbox) excludeFreeRangeCheckbox.disabled = false;
   if (exclude100YenRangeCheckbox) exclude100YenRangeCheckbox.disabled = false;
   
+  enableComparisonCheckbox.disabled = false;
   rangeSummaryButton.disabled = false;
 }
 
@@ -1448,6 +1476,105 @@ function displayError(message) {
 }
 
 /**
+ * 汎用的な期間集計ロジック
+ * @returns {Object} 集計結果オブジェクト
+ */
+function calculatePeriodStats(startDate, endDate, targetRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen) {
+    let totalRevenue = 0;
+    let totalQuantity = 0;
+    const productStats = {};
+    const userPurchaseCounts = {}; // 期間内の購入回数
+    const uniqueUsers = new Set(); // 期間内UU
+    let existingUserCount = 0; // 期間以前に購入歴があるユーザー数
+
+    for (const record of targetRecords) {
+        if (record.status === '取引完了') {
+            const orderDate = new Date(record.orderDate.split(' ')[0]);
+
+            // 期間チェック
+            if (orderDate >= startDate && orderDate <= endDate) {
+                const price = record.price || 0;
+
+                // フィルタリング判定
+                if (excludeFree && price === 0) continue;
+                if (exclude100Yen && price === 100) continue;
+
+                totalRevenue += price;
+                totalQuantity += record.quantity || 0;
+
+                const uid = record.userId;
+                uniqueUsers.add(uid);
+
+                // ユーザー集計 (期間内購入回数カウント)
+                if (!userPurchaseCounts[uid]) {
+                    userPurchaseCounts[uid] = 0;
+                }
+                userPurchaseCounts[uid] += 1;
+
+                const productName = record.productName;
+                if (!productStats[productName]) {
+                    productStats[productName] = {
+                        quantity: 0,
+                        revenue: 0,
+                        uniqueUsers: new Set()
+                    };
+                }
+                productStats[productName].quantity += (record.quantity || 0);
+                productStats[productName].revenue += price;
+                productStats[productName].uniqueUsers.add(record.userId);
+            }
+        }
+    }
+
+    // 期間内UU数
+    const userCount = uniqueUsers.size;
+
+    // 既存ユーザー数（リピーター）のカウント
+    uniqueUsers.forEach(uid => {
+        if (userFirstOrderDates[uid] && userFirstOrderDates[uid] < startDate) {
+            existingUserCount++;
+        }
+    });
+
+    // リピーター数（期間内で2回以上購入した人）
+    const periodRepeaters = Object.values(userPurchaseCounts).filter(count => count > 1).length;
+    const periodRepeaterRate = userCount > 0 ? ((periodRepeaters / userCount) * 100).toFixed(1) : '0.0';
+
+    const avgPurchasePerUser = userCount > 0 ? (totalQuantity / userCount).toFixed(2) : '0.00';
+
+    const uniqueProductCount = Object.keys(productStats).length;
+
+    // 期間商品平均購入者数
+    let totalProductUsers = 0;
+    Object.values(productStats).forEach(stat => {
+        totalProductUsers += stat.uniqueUsers.size;
+    });
+    const avgProductUsers = uniqueProductCount > 0 ? (totalProductUsers / uniqueProductCount).toFixed(2) : '0.00';
+
+    // 全期間カバー率
+    const allTimeCoverageRate = allTimeUniqueUsers.size > 0 ? ((userCount / allTimeUniqueUsers.size) * 100).toFixed(1) : '0.0';
+
+    // 既存会員率
+    const existingUserRate = userCount > 0 ? ((existingUserCount / userCount) * 100).toFixed(1) : '0.0';
+
+    return {
+        totalRevenue,
+        totalQuantity,
+        userCount,
+        uniqueProductCount,
+        productStats,
+        avgPurchasePerUser,
+        periodRepeaterRate,
+        periodRepeaters,
+        allTimeCoverageRate,
+        existingUserRate,
+        existingUserCount,
+        avgProductUsers
+    };
+}
+
+
+/**
  * 期間指定レポートの集計処理
  */
 function handleRangeSummary() {
@@ -1475,10 +1602,9 @@ function handleRangeSummary() {
   }
 
   // チェックボックスの状態を取得
-  const excludeFree = document.getElementById('excludeFreeRangeCheckbox').checked;
-  const exclude100Yen = document.getElementById('exclude100YenRangeCheckbox').checked;
+  const excludeFree = excludeFreeRangeCheckbox.checked;
+  const exclude100Yen = exclude100YenRangeCheckbox.checked;
 
-  // ★追加ロジック: 全期間データの分析（フィルター適用後）
   // 全期間のUU数と、各ユーザーの初回購入日を特定する
   const allTimeUniqueUsers = new Set();
   const userFirstOrderDates = {}; // { userId: Date }
@@ -1500,136 +1626,94 @@ function handleRangeSummary() {
           }
       }
   }
-  
-  const totalAllTimeUU = allTimeUniqueUsers.size; // 全期間UU数
 
-  // 2. その中から期間で集計
-  let rangeTotalRevenue = 0;
-  let rangeTotalQuantity = 0;
-  const rangeProductStats = {};
-  
-  // ユーザー集計用
-  const userPurchaseCounts = {}; // 期間内の購入回数
-  const rangeUniqueUsers = new Set(); // 期間内UU
-  let existingUserCount = 0; // 期間以前に購入歴があるユーザー数
+  // ★今回の期間の集計
+  const currentStats = calculatePeriodStats(startDate, endDate, targetRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
 
-  for (const record of targetRecords) {
-    if (record.status === '取引完了') {
-      const orderDate = new Date(record.orderDate.split(' ')[0]);
+  // ★比較期間の集計（チェックが入っている場合）
+  let comparisonStats = null;
+  let comparisonLabel = "";
+  
+  if (enableComparisonCheckbox.checked) {
+      let compStartDate, compEndDate;
+      const mode = comparisonModeSelector.value;
       
-      // 期間チェック
-      if (orderDate >= startDate && orderDate <= endDate) {
-        
-        const price = record.price || 0;
-
-        // フィルタリング判定
-        if (excludeFree && price === 0) continue;
-        if (exclude100Yen && price === 100) continue;
-
-        rangeTotalRevenue += price;
-        rangeTotalQuantity += record.quantity || 0;
-
-        const uid = record.userId;
-        rangeUniqueUsers.add(uid);
-
-        // ユーザー集計 (期間内購入回数カウント)
-        if (!userPurchaseCounts[uid]) {
-            userPurchaseCounts[uid] = 0;
-        }
-        userPurchaseCounts[uid] += 1;
-
-        const productName = record.productName;
-        if (!rangeProductStats[productName]) {
-          rangeProductStats[productName] = { 
-              quantity: 0, 
-              revenue: 0,
-              uniqueUsers: new Set() // 商品ごとのユニークユーザー数
-          };
-        }
-        rangeProductStats[productName].quantity += (record.quantity || 0);
-        rangeProductStats[productName].revenue += price;
-        rangeProductStats[productName].uniqueUsers.add(record.userId);
+      if (mode === 'custom') {
+          if (!comparisonStartDate.value || !comparisonEndDate.value) {
+              alert("比較用の開始日と終了日を入力してください。");
+              return;
+          }
+          compStartDate = new Date(comparisonStartDate.value);
+          compEndDate = new Date(comparisonEndDate.value);
+          compEndDate.setHours(23, 59, 59, 999);
+          comparisonLabel = `${comparisonStartDate.value} 〜 ${comparisonEndDate.value}`;
+      } else if (mode === 'prev_month_full') {
+          // メイン期間開始日の前月1日〜末日
+          const baseDate = new Date(startDate);
+          baseDate.setMonth(baseDate.getMonth() - 1);
+          compStartDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+          compEndDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0); // 月末
+          compEndDate.setHours(23, 59, 59, 999);
+          
+          const m = compStartDate.getMonth() + 1;
+          comparisonLabel = `${compStartDate.getFullYear()}年${m}月全体`;
+      } else if (mode === 'prev_month_same_days') {
+          // メイン期間の各日付の1ヶ月前
+          // 注意: 3/31の1ヶ月前など存在しない日は、その月の末日に寄せると比較日数ズレる可能性があるが、
+          // ここでは単純にMonth-1する実装とする。
+          compStartDate = new Date(startDate);
+          compStartDate.setMonth(compStartDate.getMonth() - 1);
+          
+          compEndDate = new Date(endDate);
+          compEndDate.setMonth(compEndDate.getMonth() - 1);
+          compEndDate.setHours(23, 59, 59, 999);
+          
+          comparisonLabel = `前月同期間 (${compStartDate.toLocaleDateString()}〜)`;
       }
-    }
+      
+      if (compStartDate && compEndDate) {
+           comparisonStats = calculatePeriodStats(compStartDate, compEndDate, targetRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
+      }
   }
 
-  // 期間内UU数
-  const userCount = rangeUniqueUsers.size;
-
-  // 既存ユーザー数（リピーター）のカウント
-  // 期間内の各ユーザーについて、初回購入日が期間開始日より前かどうかチェック
-  rangeUniqueUsers.forEach(uid => {
-      if (userFirstOrderDates[uid] && userFirstOrderDates[uid] < startDate) {
-          existingUserCount++;
-      }
-  });
-
-  // リピーター数（期間内で2回以上購入した人）
-  const periodRepeaters = Object.values(userPurchaseCounts).filter(count => count > 1).length;
-  const periodRepeaterRate = userCount > 0 ? ((periodRepeaters / userCount) * 100).toFixed(1) : '0.0';
-
-  const avgPurchasePerUser = userCount > 0 ? (rangeTotalQuantity / userCount).toFixed(2) : '0.00';
-  
-  // 新規追加項目の計算
-  const uniqueProductCount = Object.keys(rangeProductStats).length;
-  
-  // 期間商品平均購入者数 (各商品のUU合計 / 商品数)
-  let totalProductUsers = 0;
-  Object.values(rangeProductStats).forEach(stat => {
-      totalProductUsers += stat.uniqueUsers.size;
-  });
-  const avgProductUsers = uniqueProductCount > 0 ? (totalProductUsers / uniqueProductCount).toFixed(2) : '0.00';
-
-  // ★全期間との比較指標
-  // 全期間カバー率（今回のユーザーは全ファンの何％か）
-  const allTimeCoverageRate = totalAllTimeUU > 0 ? ((userCount / totalAllTimeUU) * 100).toFixed(1) : '0.0';
-  
-  // 既存会員率（今回のユーザーのうち、過去にも買ったことがある人の割合）
-  const existingUserRate = userCount > 0 ? ((existingUserCount / userCount) * 100).toFixed(1) : '0.0';
-
-  updateRangeSummaryModal(
-      rangeTotalRevenue, 
-      rangeTotalQuantity, 
-      avgPurchasePerUser, 
-      rangeProductStats, 
-      userCount, 
-      uniqueProductCount, 
-      avgProductUsers, 
-      periodRepeaterRate, 
-      periodRepeaters,
-      totalAllTimeUU,
-      allTimeCoverageRate,
-      existingUserRate,
-      existingUserCount
-  );
+  updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel);
 }
 
 
-function updateRangeSummaryModal(
-    rangeTotalRevenue, 
-    rangeTotalQuantity, 
-    avgPurchasePerUser, 
-    rangeProductStats, 
-    userCount, 
-    uniqueProductCount, 
-    avgProductUsers, 
-    periodRepeaterRate, 
-    periodRepeaters,
-    totalAllTimeUU,
-    allTimeCoverageRate,
-    existingUserRate,
-    existingUserCount
-) {
+function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, comparisonLabel) {
   let genreText = currentProductTypeFilter === 'all' ? '' : `<span class="text-sm font-normal ml-2">(${currentProductTypeFilter})</span>`;
 
-  // スプシ用コピー文字列の生成 (タブ区切り)
-  // 順番: 売上、販売個数、平均購入数、合計購入者数、商品数、商品平均購入者数、リピーター率、リピーター数、全期間UU、カバー率、既存率、既存数
-  const copyText = `${rangeTotalRevenue}\t${rangeTotalQuantity}\t${avgPurchasePerUser}\t${userCount}\t${uniqueProductCount}\t${avgProductUsers}\t${periodRepeaterRate}\t${periodRepeaters}\t${totalAllTimeUU}\t${allTimeCoverageRate}\t${existingUserRate}\t${existingUserCount}`;
+  // スプシ用コピー文字列の生成
+  const copyText = `${stats.totalRevenue}\t${stats.totalQuantity}\t${stats.avgPurchasePerUser}\t${stats.userCount}\t${stats.uniqueProductCount}\t${stats.avgProductUsers}\t${stats.periodRepeaterRate}\t${stats.periodRepeaters}\t${totalAllTimeUU}\t${stats.allTimeCoverageRate}\t${stats.existingUserRate}\t${stats.existingUserCount}`;
+
+  // 比較データのHTML生成ヘルパー
+  const createDiffHTML = (current, previous, unit = '') => {
+      if (!comparisonStats) return '';
+      const diff = current - previous;
+      const diffSign = diff >= 0 ? '+' : '';
+      const colorClass = diff >= 0 ? 'text-blue-600' : 'text-red-500';
+      const arrow = diff >= 0 ? '↑' : '↓';
+      
+      let percent = '';
+      if (previous > 0) {
+          const p = ((diff / previous) * 100).toFixed(1);
+          percent = `<span class="text-xs ml-1">(${diffSign}${p}%)</span>`;
+      } else if (previous === 0 && current > 0) {
+          percent = `<span class="text-xs ml-1">(新規)</span>`;
+      }
+      
+      return `<div class="text-xs ${colorClass} font-bold mt-1 bg-gray-50 rounded px-1 inline-block">
+                ${arrow} ${diffSign}${diff.toLocaleString()}${unit} ${percent}
+              </div>`;
+  };
 
   let modalHTML = `
              <div class="bg-blue-50 rounded-lg p-4 mb-6 relative">
                  <div class="flex justify-between items-start mb-3">
-                    <h3 class="text-lg font-bold text-gray-800">期間サマリー${genreText}</h3>
+                    <div>
+                        <h3 class="text-lg font-bold text-gray-800">期間サマリー${genreText}</h3>
+                        ${comparisonStats ? `<p class="text-xs text-gray-500 font-medium mt-1">比較対象: ${comparisonLabel}</p>` : ''}
+                    </div>
                     <button onclick="window.copyToClipboard('${copyText}')" class="text-xs bg-white hover:bg-gray-100 text-blue-600 font-semibold py-1 px-3 border border-blue-200 rounded shadow-sm transition-colors flex items-center gap-1">
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                         スプシ用にコピー
@@ -1638,52 +1722,51 @@ function updateRangeSummaryModal(
                  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">期間売上金額</p>
-                         <p class="text-xl font-semibold text-blue-600">${rangeTotalRevenue.toLocaleString()}円</p>
+                         <p class="text-xl font-semibold text-blue-600">${stats.totalRevenue.toLocaleString()}円</p>
+                         ${createDiffHTML(stats.totalRevenue, comparisonStats?.totalRevenue, '円')}
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">期間販売個数</p>
-                         <p class="text-xl font-semibold text-blue-600">${rangeTotalQuantity.toLocaleString()}個</p>
+                         <p class="text-xl font-semibold text-blue-600">${stats.totalQuantity.toLocaleString()}個</p>
+                         ${createDiffHTML(stats.totalQuantity, comparisonStats?.totalQuantity, '個')}
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">合計購入者数(UU)</p>
-                         <p class="text-xl font-semibold text-blue-600">${userCount.toLocaleString()}人</p>
+                         <p class="text-xl font-semibold text-blue-600">${stats.userCount.toLocaleString()}人</p>
+                         ${createDiffHTML(stats.userCount, comparisonStats?.userCount, '人')}
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">全期間UUカバー率</p>
-                         <p class="text-xl font-semibold text-blue-600">${allTimeCoverageRate}% <span class="text-xs text-gray-400 font-normal">(${userCount}/${totalAllTimeUU.toLocaleString()})</span></p>
+                         <p class="text-xl font-semibold text-blue-600">${stats.allTimeCoverageRate}% <span class="text-xs text-gray-400 font-normal">(${stats.userCount}/${totalAllTimeUU.toLocaleString()})</span></p>
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">期間内リピーター</p>
-                         <p class="text-lg font-semibold text-blue-600">${periodRepeaterRate}% <span class="text-xs text-gray-400 font-normal">(${periodRepeaters}人)</span></p>
-                         <p class="text-[10px] text-gray-400 leading-tight mt-1">期間内に2回以上購入</p>
+                         <p class="text-lg font-semibold text-blue-600">${stats.periodRepeaterRate}% <span class="text-xs text-gray-400 font-normal">(${stats.periodRepeaters}人)</span></p>
+                         ${comparisonStats ? `<p class="text-[10px] text-gray-400 mt-1">前回: ${comparisonStats.periodRepeaterRate}%</p>` : `<p class="text-[10px] text-gray-400 leading-tight mt-1">期間内に2回以上購入</p>`}
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">過去からの継続率</p>
-                         <p class="text-lg font-semibold text-blue-600">${existingUserRate}% <span class="text-xs text-gray-400 font-normal">(${existingUserCount}人)</span></p>
-                         <p class="text-[10px] text-gray-400 leading-tight mt-1">期間外の過去に購入歴あり</p>
+                         <p class="text-lg font-semibold text-blue-600">${stats.existingUserRate}% <span class="text-xs text-gray-400 font-normal">(${stats.existingUserCount}人)</span></p>
+                         ${comparisonStats ? `<p class="text-[10px] text-gray-400 mt-1">前回: ${comparisonStats.existingUserRate}%</p>` : `<p class="text-[10px] text-gray-400 leading-tight mt-1">期間外の過去に購入歴あり</p>`}
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">商品数</p>
-                         <p class="text-xl font-semibold text-blue-600">${uniqueProductCount}種類</p>
+                         <p class="text-xl font-semibold text-blue-600">${stats.uniqueProductCount}種類</p>
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
                          <p class="text-xs text-gray-500">商品平均購入者数</p>
-                         <p class="text-xl font-semibold text-blue-600">${avgProductUsers}人</p>
+                         <p class="text-xl font-semibold text-blue-600">${stats.avgProductUsers}人</p>
                      </div>
                  </div>
              </div>
             `;
 
-  const sortedProducts = Object.entries(rangeProductStats).sort(([, a], [, b]) => b.revenue - a.revenue);
+  const sortedProducts = Object.entries(stats.productStats).sort(([, a], [, b]) => b.revenue - a.revenue);
 
-  // くじ対応: 単価、UU、販売個数、売上を表示
-  const productRows = sortedProducts.map(([name, stats]) => {
-     // 単価（平均） = 売上 / 販売個数
-     const unitPrice = stats.quantity > 0 ? Math.round(stats.revenue / stats.quantity) : 0;
-     const purchaseUU = stats.uniqueUsers.size;
-     
-     // 購入率 (この商品のUU / 全体UU * 100)
-     const purchaseRate = userCount > 0 ? ((purchaseUU / userCount) * 100).toFixed(1) : '0.0';
+  const productRows = sortedProducts.map(([name, pStats]) => {
+     const unitPrice = pStats.quantity > 0 ? Math.round(pStats.revenue / pStats.quantity) : 0;
+     const purchaseUU = pStats.uniqueUsers.size;
+     const purchaseRate = stats.userCount > 0 ? ((purchaseUU / stats.userCount) * 100).toFixed(1) : '0.0';
 
      return `
              <tr class="border-t border-gray-200" data-search-name="${name.toLowerCase()}">
@@ -1693,8 +1776,8 @@ function updateRangeSummaryModal(
                     ${purchaseUU.toLocaleString()}人
                     <span class="block text-xs text-gray-400">(${purchaseRate}%)</span>
                  </td>
-                 <td class="p-3 text-right font-medium">${stats.quantity.toLocaleString()}</td>
-                 <td class="p-3 text-right text-green-600 font-bold">${stats.revenue.toLocaleString()}円</td>
+                 <td class="p-3 text-right font-medium">${pStats.quantity.toLocaleString()}</td>
+                 <td class="p-3 text-right text-green-600 font-bold">${pStats.revenue.toLocaleString()}円</td>
              </tr>
          `;
   }).join('');
