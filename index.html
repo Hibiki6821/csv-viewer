@@ -115,7 +115,7 @@
                 <input type="date" id="rangeEndDate" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
               </div>
 
-              <!-- 追加: フィルターオプション -->
+              <!-- フィルターオプション -->
               <div class="space-y-2 pt-2 border-t border-gray-100">
                 <div class="flex items-center">
                   <input id="excludeFreeRangeCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" disabled>
@@ -124,6 +124,36 @@
                 <div class="flex items-center">
                   <input id="exclude100YenRangeCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" disabled>
                   <label for="exclude100YenRangeCheckbox" class="ml-2 text-sm text-gray-700 cursor-pointer select-none">100円の商品を除外する</label>
+                </div>
+              </div>
+
+              <!-- ★比較オプション追加★ -->
+              <div class="pt-2 border-t border-gray-100">
+                <div class="flex items-center mb-2">
+                    <input id="enableComparisonCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" disabled>
+                    <label for="enableComparisonCheckbox" class="ml-2 text-sm font-bold text-gray-700 cursor-pointer select-none">過去のデータと比較する</label>
+                </div>
+                
+                <div id="comparisonSettingsArea" class="hidden pl-6 space-y-3 mb-2 transition-all duration-300 ease-in-out">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 mb-1">比較対象を選択</label>
+                        <select id="comparisonModeSelector" class="w-full text-sm px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                            <option value="prev_month_full">前月全体 (1日〜末日)</option>
+                            <option value="prev_month_same_days">前月の同じ期間 (同日数)</option>
+                            <option value="custom">期間を自由に指定</option>
+                        </select>
+                    </div>
+                    
+                    <div id="customComparisonDates" class="hidden space-y-2">
+                        <div>
+                            <label class="block text-xs text-gray-500">比較開始</label>
+                            <input type="date" id="comparisonStartDate" class="w-full text-sm px-3 py-1 border border-gray-300 rounded">
+                        </div>
+                        <div>
+                             <label class="block text-xs text-gray-500">比較終了</label>
+                            <input type="date" id="comparisonEndDate" class="w-full text-sm px-3 py-1 border border-gray-300 rounded">
+                        </div>
+                    </div>
                 </div>
               </div>
 
