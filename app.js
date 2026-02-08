@@ -22,6 +22,8 @@ import {
 
 // --- グローバル変数・定数 ---
 let db, auth, userId, appId, correctPasswordHash;
+let unsubscribeCompanyGroups = null; // onSnapshotリスナー解除用
+let unsubscribeCasts = null; // onSnapshotリスナー解除用
 let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
 let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ
@@ -393,10 +395,12 @@ function enableCastManagement() {
  * Firestoreから会社グループ一覧を読み込みます。
  */
 function loadCompanyGroups() {
+  if (unsubscribeCompanyGroups) unsubscribeCompanyGroups();
+
   const companyGroupsColRef = collection(db, `artifacts/${appId}/public/data/companyGroups`);
   const q = query(companyGroupsColRef);
 
-  onSnapshot(q, (snapshot) => {
+  unsubscribeCompanyGroups = onSnapshot(q, (snapshot) => {
     const companyGroups = [];
     snapshot.forEach((doc) => {
       companyGroups.push({ id: doc.id, name: doc.data().name });
@@ -427,10 +431,12 @@ function loadCompanyGroups() {
  * 指定された会社グループのキャスト一覧を読み込みます。
  */
 function loadCastsForCompanyGroup(companyGroupId) {
+  if (unsubscribeCasts) unsubscribeCasts();
+
   const castsColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts`);
   const q = query(castsColRef);
 
-  onSnapshot(q, (snapshot) => {
+  unsubscribeCasts = onSnapshot(q, (snapshot) => {
     const casts = [];
     snapshot.forEach((doc) => {
       casts.push({ id: doc.id, name: doc.data().name });
@@ -1263,7 +1269,7 @@ function createProductStatsTable(productStats) {
     }
     
     // 商品名をエンコードして属性にセット（JSでの取得用）
-    const encodedName = btoa(unescape(encodeURIComponent(name)));
+    const encodedName = btoa(String.fromCharCode(...new TextEncoder().encode(name)));
 
     return `
                 <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
@@ -1423,7 +1429,7 @@ window.saveProductActiveUsers = async (inputElement) => {
   const value = inputElement.value;
   const encodedName = inputElement.getAttribute('data-product-encoded');
   // Base64デコード -> URIデコード で元の日本語商品名に戻す
-  const productName = decodeURIComponent(escape(atob(encodedName)));
+  const productName = new TextDecoder().decode(Uint8Array.from(atob(encodedName), c => c.charCodeAt(0)));
 
   const numValue = parseInt(value, 10);
   
@@ -1467,12 +1473,18 @@ window.saveProductActiveUsers = async (inputElement) => {
 
 
 function displayError(message) {
-  resultsContainer.innerHTML = `
-            <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg" role="alert">
-                <p class="font-bold">エラー</p>
-                <p>${message}</p>
-            </div>
-        `;
+  const div = document.createElement('div');
+  div.className = 'bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-lg';
+  div.setAttribute('role', 'alert');
+  const title = document.createElement('p');
+  title.className = 'font-bold';
+  title.textContent = 'エラー';
+  const body = document.createElement('p');
+  body.textContent = message;
+  div.appendChild(title);
+  div.appendChild(body);
+  resultsContainer.innerHTML = '';
+  resultsContainer.appendChild(div);
 }
 
 /**
@@ -1809,22 +1821,13 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
 /**
  * クリップボードにテキストをコピーする関数
  */
-window.copyToClipboard = (text) => {
-    // 隠しtextareaを作ってコピーする（iframe対策）
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed'; // 画面外に飛ばす
-    textarea.style.left = '-9999px';
-    document.body.appendChild(textarea);
-    textarea.select();
+window.copyToClipboard = async (text) => {
     try {
-        document.execCommand('copy');
+        await navigator.clipboard.writeText(text);
         alert('スプレッドシート形式でコピーしました！\n（タブ区切りテキスト）');
     } catch (err) {
         console.error('コピーに失敗しました', err);
         alert('コピーに失敗しました');
-    } finally {
-        document.body.removeChild(textarea);
     }
 }
 
