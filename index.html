@@ -90,6 +90,16 @@
               </select>
             </div>
 
+            <!-- キャスト名編集 -->
+            <div id="editCastSection" class="mt-3 hidden">
+              <label class="block text-sm font-medium text-gray-700 mb-2">キャスト名を編集</label>
+              <div class="flex space-x-2">
+                <input type="text" id="editCastNameInput" placeholder="新しい名前" class="flex-grow w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                <button id="editCastButton" class="bg-yellow-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-yellow-600 transition-colors">保存</button>
+              </div>
+              <p id="editCastError" class="text-red-500 text-sm mt-2"></p>
+            </div>
+
             <!-- キャスト追加 -->
             <div class="mt-4">
               <label for="newCastNameInput" class="block text-sm font-medium text-gray-700 mb-2">キャストを追加</label>
