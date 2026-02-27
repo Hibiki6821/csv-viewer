@@ -873,8 +873,14 @@ async function loadAccessData() {
     const dataDocRef = doc(db, `artifacts/${appId}/public/data`);
     const snap = await getDoc(dataDocRef);
     if (snap.exists() && snap.data().jsonData) {
-      cachedAccessData = snap.data().jsonData;
+      const raw = snap.data().jsonData;
+      // Firestoreに文字列として保存されている場合はJSONパース
+      cachedAccessData = typeof raw === 'string' ? JSON.parse(raw) : raw;
       console.log(`アクセスデータ読み込み完了: ${cachedAccessData.length}件`);
+      // デバッグ: 最初のエントリのキー一覧
+      if (cachedAccessData.length > 0) {
+        console.log('アクセスデータのキー:', Object.keys(cachedAccessData[0]));
+      }
     } else {
       cachedAccessData = [];
       console.warn('アクセスデータ(jsonData)が見つかりませんでした。');
