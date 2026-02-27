@@ -14,6 +14,8 @@ import {
   onSnapshot,
   writeBatch,
   query,
+  where,
+  limit,
   getDocs
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -28,7 +30,7 @@ let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
 let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ
 let globalProductMetadata = {}; // 商品別のアクティブユーザー数などのメタデータ
-let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
+let currentSummaryPeriod = 'monthly'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
@@ -344,23 +346,41 @@ function setupEventListeners() {
 }
 
 /**
- * サマリー期間の変更を処理します。
+ * サマリー期間の変更を処理します。期間に応じてFirestoreからデータを再取得します。
  */
-function handleSummaryPeriodChange(period) {
+async function handleSummaryPeriodChange(period) {
   currentSummaryPeriod = period;
+  updateSummaryButtonStyles(period);
 
-  [summaryAllButton, summaryMonthlyButton, summaryWeeklyButton].forEach(btn => {
-    btn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
-    btn.classList.add('bg-gray-500', 'hover:bg-gray-600');
-  });
+  const castId = castSelector.value;
+  if (!castId) return;
 
-  const selectedButton = period === 'all' ? summaryAllButton :
-    period === 'monthly' ? summaryMonthlyButton : summaryWeeklyButton;
-  selectedButton.classList.remove('bg-gray-500', 'hover:bg-gray-600');
-  selectedButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
+  const companyGroupId = companyGroupSelector.value;
+  loadingIndicator.classList.remove('hidden');
+  resultsContainer.innerHTML = '';
+  searchSection.classList.add('hidden');
+  productTypeFilterContainer.classList.add('hidden');
 
-  // ビューの再描画 (グローバルデータを使用)
-  updateViewFromGlobalData();
+  try {
+    await loadOrdersForPeriod(castId, companyGroupId);
+
+    if (globalAllRecords.length === 0) {
+      displayError("この期間にはデータがありません。");
+      return;
+    }
+
+    extractAvailableProductTypes(globalAllRecords);
+    renderProductTypeTabs();
+    currentProductTypeFilter = 'all';
+    updateViewFromGlobalData();
+    searchSection.classList.remove('hidden');
+    productTypeFilterContainer.classList.remove('hidden');
+  } catch (error) {
+    console.error("期間変更時のデータ読み込みエラー:", error);
+    displayError("データの読み込み中にエラーが発生しました: " + error.message);
+  } finally {
+    loadingIndicator.classList.add('hidden');
+  }
 }
 
 
@@ -655,10 +675,13 @@ async function saveDataToFirestore(castId, records, header) {
       productType = record[indices.productType];
     }
 
+    const rawDate = record[indices.date] || '';
+    const normalizedDate = rawDate.replace(/\//g, '-');
+
     const orderData = {
       orderId: orderId,
       status: record[indices.status],
-      orderDate: record[indices.date],
+      orderDate: normalizedDate,
       productName: record[indices.productName],
       quantity: parseInt(record[indices.quantity], 10) || 0,
       userId: record[indices.userId],
@@ -685,6 +708,104 @@ async function saveDataToFirestore(castId, records, header) {
 }
 
 /**
+ * Dateオブジェクトを "YYYY-MM-DD" 文字列に変換します。
+ */
+function toDateStr(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * 指定した期間の注文データをFirestoreから取得します。
+ * startDate/endDate が null の場合は全件取得します。
+ * 旧フォーマット（スラッシュ区切り日付）データへの後方互換フォールバックあり。
+ */
+async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
+  const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
+
+  if (!startDate || !endDate) {
+    const snap = await getDocs(query(ordersColRef));
+    const records = [];
+    snap.forEach(d => records.push(d.data()));
+    return records;
+  }
+
+  const startStr = toDateStr(startDate);
+  const endStr = toDateStr(endDate) + ' 23:59:59';
+  const rangeQ = query(
+    ordersColRef,
+    where('orderDate', '>=', startStr),
+    where('orderDate', '<=', endStr)
+  );
+  const rangeSnap = await getDocs(rangeQ);
+
+  if (!rangeSnap.empty) {
+    const records = [];
+    rangeSnap.forEach(d => records.push(d.data()));
+    return records;
+  }
+
+  // 範囲クエリが空 → 旧フォーマット（スラッシュ区切り）のデータが存在するか確認
+  const checkSnap = await getDocs(query(ordersColRef, limit(1)));
+  if (checkSnap.empty) return [];
+
+  // 旧フォーマットのデータあり → 全件取得してクライアント側でフィルタ（後方互換）
+  console.log('旧フォーマットのデータを検出。全件取得してクライアントでフィルタします。CSVを再アップロードすると高速クエリが使われます。');
+  const allSnap = await getDocs(query(ordersColRef));
+  const allRecords = [];
+  allSnap.forEach(d => allRecords.push(d.data()));
+  return allRecords.filter(r => {
+    if (!r.orderDate) return false;
+    const d = new Date(r.orderDate.split(' ')[0]);
+    return d >= startDate && d <= endDate;
+  });
+}
+
+/**
+ * currentSummaryPeriod に基づいた日付範囲でFirestoreからデータを取得し
+ * globalAllRecords を更新します。
+ */
+async function loadOrdersForPeriod(castId, companyGroupId) {
+  const now = new Date();
+  let startDate, endDate;
+
+  switch (currentSummaryPeriod) {
+    case 'weekly':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      endDate = now;
+      break;
+    case 'monthly':
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      endDate = now;
+      break;
+    case 'all':
+    default:
+      startDate = null;
+      endDate = null;
+      break;
+  }
+
+  globalAllRecords = await fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate);
+  console.log(`期間(${currentSummaryPeriod})データ読み込み完了: ${globalAllRecords.length}件`);
+}
+
+/**
+ * サマリー期間ボタンのスタイルを更新します。
+ */
+function updateSummaryButtonStyles(period) {
+  [summaryAllButton, summaryMonthlyButton, summaryWeeklyButton].forEach(btn => {
+    btn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+    btn.classList.add('bg-gray-500', 'hover:bg-gray-600');
+  });
+  const selected = period === 'all' ? summaryAllButton :
+    period === 'monthly' ? summaryMonthlyButton : summaryWeeklyButton;
+  selected.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+  selected.classList.add('bg-blue-600', 'hover:bg-blue-700');
+}
+
+/**
  * 指定されたキャストの注文データとメタデータをFirestoreから読み込み、分析します。
  */
 async function loadCastData(castId) {
@@ -696,15 +817,9 @@ async function loadCastData(castId) {
 
   try {
     const companyGroupId = companyGroupSelector.value;
-    
-    // 注文データの読み込み
-    const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
-    const snapshot = await getDocs(ordersColRef);
 
-    globalAllRecords = [];
-    snapshot.forEach(doc => {
-      globalAllRecords.push(doc.data());
-    });
+    // 現在の期間設定に基づいてデータを読み込む
+    await loadOrdersForPeriod(castId, companyGroupId);
     
     // 日別メタデータ（アクティブユーザー数など）の読み込み
     globalDailyMetadata = {};
@@ -740,7 +855,7 @@ async function loadCastData(castId) {
     console.log(`データ読み込み完了。${globalAllRecords.length}件の注文データを取得。`);
 
     if (globalAllRecords.length === 0) {
-      displayError("このキャストにはまだ注文データがありません。CSVをアップロードしてください。");
+      displayError("この期間にはデータがありません。「全体」を選択するか、CSVをアップロードしてください。");
       searchSection.classList.add('hidden');
       return;
     }
@@ -753,6 +868,7 @@ async function loadCastData(castId) {
 
     // デフォルトで「すべて」を選択して表示
     currentProductTypeFilter = 'all';
+    updateSummaryButtonStyles(currentSummaryPeriod);
     updateViewFromGlobalData();
 
     searchSection.classList.remove('hidden');
@@ -1587,9 +1703,9 @@ function calculatePeriodStats(startDate, endDate, targetRecords, allTimeUniqueUs
 
 
 /**
- * 期間指定レポートの集計処理
+ * 期間指定レポートの集計処理。指定期間のデータをFirestoreから直接取得します。
  */
-function handleRangeSummary() {
+async function handleRangeSummary() {
   const startDateStr = rangeStartDateInput.value;
   const endDateStr = rangeEndDateInput.value;
 
@@ -1607,88 +1723,96 @@ function handleRangeSummary() {
   }
   endDate.setHours(23, 59, 59, 999);
 
-  // 1. まず現在のフィルタ(商品タイプ)で絞り込む
-  let targetRecords = globalAllRecords;
-  if (currentProductTypeFilter !== 'all') {
-    targetRecords = globalAllRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
-  }
-
-  // チェックボックスの状態を取得
   const excludeFree = excludeFreeRangeCheckbox.checked;
   const exclude100Yen = exclude100YenRangeCheckbox.checked;
 
-  // 全期間のUU数と、各ユーザーの初回購入日を特定する
-  const allTimeUniqueUsers = new Set();
-  const userFirstOrderDates = {}; // { userId: Date }
-
-  // フィルタリング済みの全期間レコードを走査
-  for (const record of targetRecords) {
-      if (record.status === '取引完了') {
-          const price = record.price || 0;
-          // フィルタリング判定
-          if (excludeFree && price === 0) continue;
-          if (exclude100Yen && price === 100) continue;
-
-          const uid = record.userId;
-          allTimeUniqueUsers.add(uid);
-          
-          const orderDate = new Date(record.orderDate.split(' ')[0]);
-          if (!userFirstOrderDates[uid] || orderDate < userFirstOrderDates[uid]) {
-              userFirstOrderDates[uid] = orderDate;
-          }
-      }
-  }
-
-  // ★今回の期間の集計
-  const currentStats = calculatePeriodStats(startDate, endDate, targetRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
-
-  // ★比較期間の集計（チェックが入っている場合）
-  let comparisonStats = null;
-  let comparisonLabel = "";
-  
+  // 比較期間の日付を先に計算（後でバリデーションエラーがあれば早期リターン）
+  let compStartDate, compEndDate, comparisonLabel = "";
   if (enableComparisonCheckbox.checked) {
-      let compStartDate, compEndDate;
-      const mode = comparisonModeSelector.value;
-      
-      if (mode === 'custom') {
-          if (!comparisonStartDate.value || !comparisonEndDate.value) {
-              alert("比較用の開始日と終了日を入力してください。");
-              return;
-          }
-          compStartDate = new Date(comparisonStartDate.value);
-          compEndDate = new Date(comparisonEndDate.value);
-          compEndDate.setHours(23, 59, 59, 999);
-          comparisonLabel = `${comparisonStartDate.value} 〜 ${comparisonEndDate.value}`;
-      } else if (mode === 'prev_month_full') {
-          // メイン期間開始日の前月1日〜末日
-          const baseDate = new Date(startDate);
-          baseDate.setMonth(baseDate.getMonth() - 1);
-          compStartDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
-          compEndDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0); // 月末
-          compEndDate.setHours(23, 59, 59, 999);
-          
-          const m = compStartDate.getMonth() + 1;
-          comparisonLabel = `${compStartDate.getFullYear()}年${m}月全体`;
-      } else if (mode === 'prev_month_same_days') {
-          // メイン期間の各日付の1ヶ月前
-          // 注意: 3/31の1ヶ月前など存在しない日は、その月の末日に寄せると比較日数ズレる可能性があるが、
-          // ここでは単純にMonth-1する実装とする。
-          compStartDate = new Date(startDate);
-          compStartDate.setMonth(compStartDate.getMonth() - 1);
-          
-          compEndDate = new Date(endDate);
-          compEndDate.setMonth(compEndDate.getMonth() - 1);
-          compEndDate.setHours(23, 59, 59, 999);
-          
-          comparisonLabel = `前月同期間 (${compStartDate.toLocaleDateString()}〜)`;
+    const mode = comparisonModeSelector.value;
+    if (mode === 'custom') {
+      if (!comparisonStartDate.value || !comparisonEndDate.value) {
+        alert("比較用の開始日と終了日を入力してください。");
+        return;
       }
-      
-      if (compStartDate && compEndDate) {
-           comparisonStats = calculatePeriodStats(compStartDate, compEndDate, targetRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
-      }
+      compStartDate = new Date(comparisonStartDate.value);
+      compEndDate = new Date(comparisonEndDate.value);
+      compEndDate.setHours(23, 59, 59, 999);
+      comparisonLabel = `${comparisonStartDate.value} 〜 ${comparisonEndDate.value}`;
+    } else if (mode === 'prev_month_full') {
+      const baseDate = new Date(startDate);
+      baseDate.setMonth(baseDate.getMonth() - 1);
+      compStartDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+      compEndDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0);
+      compEndDate.setHours(23, 59, 59, 999);
+      const m = compStartDate.getMonth() + 1;
+      comparisonLabel = `${compStartDate.getFullYear()}年${m}月全体`;
+    } else if (mode === 'prev_month_same_days') {
+      compStartDate = new Date(startDate);
+      compStartDate.setMonth(compStartDate.getMonth() - 1);
+      compEndDate = new Date(endDate);
+      compEndDate.setMonth(compEndDate.getMonth() - 1);
+      compEndDate.setHours(23, 59, 59, 999);
+      comparisonLabel = `前月同期間 (${compStartDate.toLocaleDateString()}〜)`;
+    }
   }
 
-  updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel);
+  loadingIndicator.classList.remove('hidden');
+  rangeSummaryButton.disabled = true;
+
+  try {
+    const companyGroupId = companyGroupSelector.value;
+    const castId = castSelector.value;
+
+    // 指定期間のデータをFirestoreから取得
+    let rangeRecords = await fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate);
+    if (currentProductTypeFilter !== 'all') {
+      rangeRecords = rangeRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
+    }
+
+    // 比較期間のデータを取得（有効な場合）
+    let compFilteredRecords = null;
+    let compRawRecords = [];
+    if (enableComparisonCheckbox.checked && compStartDate && compEndDate) {
+      compRawRecords = await fetchOrdersByPeriod(castId, companyGroupId, compStartDate, compEndDate);
+      compFilteredRecords = currentProductTypeFilter !== 'all'
+        ? compRawRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter)
+        : compRawRecords;
+    }
+
+    // allTimeUniqueUsers と userFirstOrderDates を
+    // rangeRecords + compRawRecords の union から計算（より正確な approximation）
+    const allTimeUniqueUsers = new Set();
+    const userFirstOrderDates = {};
+    for (const record of [...rangeRecords, ...compRawRecords]) {
+      if (record.status === '取引完了') {
+        const price = record.price || 0;
+        if (excludeFree && price === 0) continue;
+        if (exclude100Yen && price === 100) continue;
+        const uid = record.userId;
+        allTimeUniqueUsers.add(uid);
+        const orderDate = new Date(record.orderDate.split(' ')[0]);
+        if (!userFirstOrderDates[uid] || orderDate < userFirstOrderDates[uid]) {
+          userFirstOrderDates[uid] = orderDate;
+        }
+      }
+    }
+
+    const currentStats = calculatePeriodStats(startDate, endDate, rangeRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
+
+    let comparisonStats = null;
+    if (compFilteredRecords) {
+      comparisonStats = calculatePeriodStats(compStartDate, compEndDate, compFilteredRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
+    }
+
+    updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel);
+  } catch (error) {
+    console.error("期間指定レポートエラー:", error);
+    alert("データの取得中にエラーが発生しました: " + error.message);
+  } finally {
+    loadingIndicator.classList.add('hidden');
+    rangeSummaryButton.disabled = false;
+  }
 }
 
 
