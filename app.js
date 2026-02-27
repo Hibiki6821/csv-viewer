@@ -54,7 +54,8 @@ const passwordLoadingMessage = document.getElementById('password-loading-message
 // --- DOM要素 (メインコンテンツ) ---
 let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGroupError,
   castSelector, newCastNameInput, addCastButton,
-  castError, castLoadingMessage, uploadSection, fileInput, searchSection,
+  castError, castLoadingMessage, editCastSection, editCastNameInput, editCastButton, editCastError,
+  uploadSection, fileInput, searchSection,
   searchInput, loadingIndicator, resultsContainer,
   dailyDetailsModal, modalTitle, modalBody,
   rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
@@ -108,6 +109,10 @@ function showMainContentAndInitApp() {
   addCastButton = document.getElementById('addCastButton');
   castError = document.getElementById('castError');
   castLoadingMessage = document.getElementById('cast-loading-message');
+  editCastSection = document.getElementById('editCastSection');
+  editCastNameInput = document.getElementById('editCastNameInput');
+  editCastButton = document.getElementById('editCastButton');
+  editCastError = document.getElementById('editCastError');
   uploadSection = document.getElementById('upload-section');
   fileInput = document.getElementById('csvFileInput');
   searchSection = document.getElementById('search-section');
@@ -302,8 +307,14 @@ function setupEventListeners() {
     if (castId) {
       loadCastData(castId);
       uploadSection.classList.remove('hidden');
+      // 現在の名前を編集欄にセット
+      const selectedOption = castSelector.options[castSelector.selectedIndex];
+      editCastNameInput.value = selectedOption.textContent;
+      editCastError.textContent = '';
+      editCastSection.classList.remove('hidden');
     } else {
       uploadSection.classList.add('hidden');
+      editCastSection.classList.add('hidden');
       resultsContainer.innerHTML = '';
       searchSection.classList.add('hidden');
       productTypeFilterContainer.classList.add('hidden');
@@ -317,6 +328,11 @@ function setupEventListeners() {
   addCastButton.addEventListener('click', handleAddCast);
   newCastNameInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') handleAddCast();
+  });
+
+  editCastButton.addEventListener('click', handleEditCastName);
+  editCastNameInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleEditCastName();
   });
 
   fileInput.addEventListener('change', handleFileSelect);
@@ -474,6 +490,11 @@ function loadCastsForCompanyGroup(companyGroupId) {
 
     if (currentCastId) {
       castSelector.value = currentCastId;
+      // 編集欄の名前を最新名に同期
+      if (editCastSection && !editCastSection.classList.contains('hidden')) {
+        const selectedOption = castSelector.options[castSelector.selectedIndex];
+        if (selectedOption) editCastNameInput.value = selectedOption.textContent;
+      }
     }
     enableCastManagement();
 
@@ -547,6 +568,35 @@ async function handleAddCast() {
     castError.textContent = 'キャストの追加に失敗しました。';
   } finally {
     addCastButton.disabled = false;
+  }
+}
+
+/**
+ * 選択中のキャストの名前を更新します。
+ */
+async function handleEditCastName() {
+  const newName = editCastNameInput.value.trim();
+  const castId = castSelector.value;
+  const companyGroupId = companyGroupSelector.value;
+
+  if (!newName) {
+    editCastError.textContent = '新しい名前を入力してください。';
+    return;
+  }
+  if (!castId || !companyGroupId) return;
+
+  editCastError.textContent = '';
+  editCastButton.disabled = true;
+
+  try {
+    const castDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}`);
+    await setDoc(castDocRef, { name: newName }, { merge: true });
+    // onSnapshot が発火してドロップダウンが自動更新される
+  } catch (error) {
+    console.error("キャスト名の更新エラー:", error);
+    editCastError.textContent = 'キャスト名の更新に失敗しました。';
+  } finally {
+    editCastButton.disabled = false;
   }
 }
 
