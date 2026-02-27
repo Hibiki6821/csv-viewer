@@ -30,10 +30,12 @@ let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
 let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ
 let globalProductMetadata = {}; // 商品別のアクティブユーザー数などのメタデータ
-let currentSummaryPeriod = 'monthly'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
+let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
+let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (JSONアクセスデータ)
+let cachedAccessData = null; // Firestoreから取得したJSONアクセスデータのキャッシュ
 
 // Chart.jsのインスタンス保持用
 let salesChartInstance = null;
@@ -782,22 +784,28 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
     return records;
   }
 
-  const startStr = toDateStr(startDate);
-  const endStr = toDateStr(endDate) + ' 23:59:59';
-  const rangeQ = query(
-    ordersColRef,
-    where('orderDate', '>=', startStr),
-    where('orderDate', '<=', endStr)
-  );
-  const rangeSnap = await getDocs(rangeQ);
+  // まず範囲クエリを試みる（新フォーマットデータ向け）
+  try {
+    const startStr = toDateStr(startDate);
+    const endStr = toDateStr(endDate) + ' 23:59:59';
+    const rangeQ = query(
+      ordersColRef,
+      where('orderDate', '>=', startStr),
+      where('orderDate', '<=', endStr)
+    );
+    const rangeSnap = await getDocs(rangeQ);
 
-  if (!rangeSnap.empty) {
-    const records = [];
-    rangeSnap.forEach(d => records.push(d.data()));
-    return records;
+    if (!rangeSnap.empty) {
+      const records = [];
+      rangeSnap.forEach(d => records.push(d.data()));
+      return records;
+    }
+  } catch (e) {
+    // インデックス未作成・セキュリティルール等でクエリが失敗した場合はフォールバック
+    console.warn('範囲クエリに失敗しました。全件取得にフォールバックします:', e.message);
   }
 
-  // 範囲クエリが空 → 旧フォーマット（スラッシュ区切り）のデータが存在するか確認
+  // 範囲クエリが空 or 失敗 → 旧フォーマット（スラッシュ区切り）のデータが存在するか確認
   const checkSnap = await getDocs(query(ordersColRef, limit(1)));
   if (checkSnap.empty) return [];
 
@@ -856,6 +864,139 @@ function updateSummaryButtonStyles(period) {
 }
 
 /**
+ * Firestoreの artifacts/{appId}/public/data ドキュメントから jsonData フィールドを取得します。
+ * 結果はセッション中キャッシュされます。
+ */
+async function loadAccessData() {
+  if (cachedAccessData !== null) return cachedAccessData;
+  try {
+    const dataDocRef = doc(db, `artifacts/${appId}/public/data`);
+    const snap = await getDoc(dataDocRef);
+    if (snap.exists() && snap.data().jsonData) {
+      cachedAccessData = snap.data().jsonData;
+      console.log(`アクセスデータ読み込み完了: ${cachedAccessData.length}件`);
+    } else {
+      cachedAccessData = [];
+      console.warn('アクセスデータ(jsonData)が見つかりませんでした。');
+    }
+  } catch (e) {
+    console.warn('アクセスデータの取得に失敗しました:', e.message);
+    cachedAccessData = [];
+  }
+  return cachedAccessData;
+}
+
+/**
+ * キャスト名に対応するJSONデータのプレフィックスを探します。
+ * 例: キャスト名「まりの」→ プレフィックス「まりの」、「まり」→「まりの」
+ */
+function findCastAccessPrefix(castName, jsonData) {
+  if (!jsonData || jsonData.length === 0 || !castName) return null;
+
+  // 「アクセス」で終わるキーからプレフィックスを抽出
+  const sampleEntry = jsonData[0];
+  const prefixes = Object.keys(sampleEntry)
+    .filter(k => k.endsWith('アクセス') && k !== 'アクセス')
+    .map(k => k.slice(0, -4)); // 末尾の「アクセス」(4文字)を除去
+
+  // 完全一致
+  if (prefixes.includes(castName)) return castName;
+
+  // 前方一致（キャスト名がプレフィックスで始まる、またはその逆）
+  for (const prefix of prefixes) {
+    if (castName.startsWith(prefix) || prefix.startsWith(castName)) {
+      return prefix;
+    }
+  }
+
+  // 部分一致（先頭2文字以上が一致するもの）
+  let bestPrefix = null;
+  let bestScore = 0;
+  for (const prefix of prefixes) {
+    const minLen = Math.min(castName.length, prefix.length);
+    for (let len = minLen; len >= 2; len--) {
+      if (castName.slice(0, len) === prefix.slice(0, len)) {
+        if (len > bestScore) {
+          bestScore = len;
+          bestPrefix = prefix;
+        }
+        break;
+      }
+    }
+  }
+
+  return bestScore >= 2 ? bestPrefix : null;
+}
+
+/**
+ * JSONデータから指定プレフィックスのアクセス数を日付別Mapに変換します。
+ * M/D形式の日付に年を付与します（年末年始をまたぐ際の年推定あり）。
+ */
+function buildAccessDateMap(castPrefix, jsonData) {
+  const map = new Map();
+  if (!jsonData || jsonData.length === 0 || !castPrefix) return map;
+
+  const accessKey = castPrefix + 'アクセス';
+
+  // 最終エントリの月を基準に年を推定
+  const today = new Date();
+  const lastEntry = jsonData[jsonData.length - 1];
+  const lastParts = lastEntry['日付'].split('/');
+  const lastMonth = parseInt(lastParts[0]);
+  const lastDay = parseInt(lastParts[1]);
+
+  let year = today.getFullYear();
+  // 最終エントリが現在の日付より未来になる場合は昨年とみなす
+  if (new Date(year, lastMonth - 1, lastDay) > today) {
+    year--;
+  }
+
+  // 配列を末尾から走査し、月が増加したとき（1月→12月へさかのぼる）年を1引く
+  let prevMonth = lastMonth;
+  for (let i = jsonData.length - 1; i >= 0; i--) {
+    const entry = jsonData[i];
+    const parts = entry['日付'].split('/');
+    const month = parseInt(parts[0]);
+    const day = parseInt(parts[1]);
+
+    // 過去方向への走査で月が増加する = 年をまたいだ（1月→12月）
+    if (i < jsonData.length - 1 && month > prevMonth) {
+      year--;
+    }
+    prevMonth = month;
+
+    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const accessVal = entry[accessKey];
+    if (accessVal !== undefined && accessVal !== '#N/A' && accessVal !== null && accessVal !== '') {
+      const num = parseInt(accessVal, 10);
+      if (!isNaN(num) && num >= 0) {
+        map.set(dateStr, num);
+      }
+    }
+  }
+
+  return map;
+}
+
+/**
+ * キャスト名に対応するアクセスデータを globalAccessDataMap に設定します。
+ */
+async function loadAccessDataForCast(castName) {
+  globalAccessDataMap = new Map();
+  const jsonData = await loadAccessData();
+  if (!jsonData || jsonData.length === 0) return;
+
+  const prefix = findCastAccessPrefix(castName, jsonData);
+  if (!prefix) {
+    console.warn(`キャスト「${castName}」に対応するアクセスデータが見つかりませんでした。`);
+    return;
+  }
+  console.log(`キャスト「${castName}」のアクセスデータプレフィックス: 「${prefix}」`);
+  globalAccessDataMap = buildAccessDateMap(prefix, jsonData);
+  console.log(`アクセスデータマップ構築完了: ${globalAccessDataMap.size}件`);
+}
+
+/**
  * 指定されたキャストの注文データとメタデータをFirestoreから読み込み、分析します。
  */
 async function loadCastData(castId) {
@@ -903,6 +1044,10 @@ async function loadCastData(castId) {
     }
 
     console.log(`データ読み込み完了。${globalAllRecords.length}件の注文データを取得。`);
+
+    // キャスト名を取得してアクセスデータをロード
+    const castName = castSelector.options[castSelector.selectedIndex]?.text || '';
+    await loadAccessDataForCast(castName);
 
     if (globalAllRecords.length === 0) {
       displayError("この期間にはデータがありません。「全体」を選択するか、CSVをアップロードしてください。");
@@ -1153,7 +1298,9 @@ function renderCharts(dailyStats) {
     const labels = sortedDates;
     const revenueData = sortedDates.map(date => dailyStats[date].revenue);
     const cvrData = sortedDates.map(date => {
-        const activeUsers = globalDailyMetadata[date]?.activeUsers || 0;
+        const jsonAccess = globalAccessDataMap.get(date) || 0;
+        const metaAccess = globalDailyMetadata[date]?.activeUsers || 0;
+        const activeUsers = jsonAccess || metaAccess; // JSONデータを優先
         const purchaseUU = dailyStats[date].uniqueUsers.size;
         return activeUsers > 0 ? (purchaseUU / activeUsers) * 100 : 0;
     });
@@ -1498,11 +1645,26 @@ function createDailyStatsTable(dailyStats) {
     const activeUsers = globalDailyMetadata[date]?.activeUsers || '';
     // 購入者UU数
     const purchaseUU = dailyStats[date].uniqueUsers.size;
-    
-    // CVR計算 (購入UU / アクティブユーザー * 100)
+
+    // JSONアクセスデータ
+    const jsonAccess = globalAccessDataMap.get(date);
+    const accessDisplay = jsonAccess !== undefined
+      ? `<span class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">${jsonAccess.toLocaleString()}</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
+
+    // ARPU = 売上 ÷ アクセス数
+    const arpu = (jsonAccess !== undefined && jsonAccess > 0)
+      ? Math.round(dailyStats[date].revenue / jsonAccess)
+      : null;
+    const arpuDisplay = arpu !== null
+      ? `<span class="font-semibold text-purple-600">${arpu.toLocaleString()}円</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
+
+    // CVR計算 (購入UU / アクセス数 or アクティブユーザー)
+    const accessForCvr = jsonAccess || (activeUsers ? parseInt(activeUsers, 10) : 0);
     let cvrDisplay = '-';
-    if (activeUsers && activeUsers > 0) {
-        const cvr = (purchaseUU / activeUsers) * 100;
+    if (accessForCvr > 0) {
+        const cvr = (purchaseUU / accessForCvr) * 100;
         cvrDisplay = cvr.toFixed(2) + '%';
     }
 
@@ -1510,16 +1672,18 @@ function createDailyStatsTable(dailyStats) {
             <tr class="border-b border-gray-200 hover:bg-gray-50 cursor-pointer" onclick="window.showDailyDetailsModal('${date}')">
                 <td class="p-3 text-sm text-gray-700 whitespace-nowrap">${date}</td>
                 <td class="p-3 text-center" onclick="event.stopPropagation()">
-                    <input type="number" 
-                           class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm" 
-                           placeholder="UU入力" 
+                    <input type="number"
+                           class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm"
+                           placeholder="UU入力"
                            autocomplete="off"
-                           value="${activeUsers}" 
+                           value="${activeUsers}"
                            onchange="window.saveActiveUsers('${date}', this.value)"
                            min="0">
                 </td>
                 <td class="p-3 text-right text-sm font-medium">${purchaseUU.toLocaleString()}</td>
                 <td class="p-3 text-right text-sm font-semibold text-blue-600">${cvrDisplay}</td>
+                <td class="p-3 text-right text-sm">${accessDisplay}</td>
+                <td class="p-3 text-right text-sm">${arpuDisplay}</td>
                 <td class="p-3 text-right font-medium text-sm">${dailyStats[date].quantity.toLocaleString()}</td>
                 <td class="p-3 text-right font-semibold text-green-600 text-sm">${dailyStats[date].revenue.toLocaleString()}円</td>
             </tr>
@@ -1527,20 +1691,22 @@ function createDailyStatsTable(dailyStats) {
   }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="6" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="8" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">日別レポート (クリックで詳細)</h2>
-                <div class="overflow-x-auto max-h-[80vh]"> <!-- 縦並びにしたので高さを少し拡張 -->
-                    <table class="w-full min-w-[600px]">
+                <div class="overflow-x-auto max-h-[80vh]">
+                    <table class="w-full min-w-[700px]">
                         <thead class="bg-gray-50 sticky top-0 z-10">
                             <tr>
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">日付</th>
-                                <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">アクティブ<br>ユーザー</th>
+                                <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">手動<br>UU入力</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者<br>(UU)</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">アクセス数<br><span class="text-gray-400 normal-case font-normal">(JSON)</span></th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">ARPU</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
                             </tr>
@@ -1855,7 +2021,17 @@ async function handleRangeSummary() {
       comparisonStats = calculatePeriodStats(compStartDate, compEndDate, compFilteredRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
     }
 
-    updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel);
+    // JSONアクセスデータから期間内の合計アクセス数を集計
+    let totalAccess = 0;
+    let compTotalAccess = 0;
+    for (const [dateStr, count] of globalAccessDataMap) {
+      const d = new Date(dateStr);
+      if (d >= startDate && d <= endDate) totalAccess += count;
+      if (compStartDate && compEndDate && d >= compStartDate && d <= compEndDate) compTotalAccess += count;
+    }
+    const accessInfo = totalAccess > 0 ? { totalAccess, compTotalAccess } : null;
+
+    updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel, accessInfo);
   } catch (error) {
     console.error("期間指定レポートエラー:", error);
     alert("データの取得中にエラーが発生しました: " + error.message);
@@ -1866,8 +2042,12 @@ async function handleRangeSummary() {
 }
 
 
-function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, comparisonLabel) {
+function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, comparisonLabel, accessInfo = null) {
   let genreText = currentProductTypeFilter === 'all' ? '' : `<span class="text-sm font-normal ml-2">(${currentProductTypeFilter})</span>`;
+
+  const arpu = accessInfo && accessInfo.totalAccess > 0 ? Math.round(stats.totalRevenue / accessInfo.totalAccess) : null;
+  const compArpu = accessInfo && comparisonStats && accessInfo.compTotalAccess > 0
+    ? Math.round(comparisonStats.totalRevenue / accessInfo.compTotalAccess) : null;
 
   // スプシ用コピー文字列の生成
   const copyText = `${stats.totalRevenue}\t${stats.totalQuantity}\t${stats.avgPurchasePerUser}\t${stats.userCount}\t${stats.uniqueProductCount}\t${stats.avgProductUsers}\t${stats.periodRepeaterRate}\t${stats.periodRepeaters}\t${totalAllTimeUU}\t${stats.allTimeCoverageRate}\t${stats.existingUserRate}\t${stats.existingUserCount}`;
@@ -1943,6 +2123,13 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
                          <p class="text-xs text-gray-500">商品平均購入者数</p>
                          <p class="text-xl font-semibold text-blue-600">${stats.avgProductUsers}人</p>
                      </div>
+                     ${arpu !== null ? `
+                     <div class="bg-white p-2 rounded shadow-sm border border-purple-100">
+                         <p class="text-xs text-gray-500">ARPU <span class="text-gray-400">(売上÷アクセス)</span></p>
+                         <p class="text-xl font-semibold text-purple-600">${arpu.toLocaleString()}円</p>
+                         ${compArpu !== null ? `<p class="text-[10px] text-gray-400 mt-1">前回: ${compArpu.toLocaleString()}円</p>` : ''}
+                         <p class="text-[10px] text-gray-400 mt-0.5">アクセス: ${accessInfo.totalAccess.toLocaleString()}</p>
+                     </div>` : ''}
                  </div>
              </div>
             `;
