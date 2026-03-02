@@ -1814,6 +1814,11 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
   const compArpu = accessInfo && comparisonStats && accessInfo.compTotalAccess > 0
     ? Math.round(comparisonStats.totalRevenue / accessInfo.compTotalAccess) : null;
 
+  // ARPU計算の内訳をコンソールに出力
+  if (accessInfo) {
+    console.log(`[ARPU計算] 売上: ${stats.totalRevenue.toLocaleString()}円, アクセス: ${accessInfo.totalAccess.toLocaleString()}, ARPU: ${arpu !== null ? arpu.toLocaleString() + '円' : 'N/A'}`);
+  }
+
   // スプシ用コピー文字列の生成
   const copyText = `${stats.totalRevenue}\t${stats.totalQuantity}\t${stats.avgPurchasePerUser}\t${stats.userCount}\t${stats.uniqueProductCount}\t${stats.avgProductUsers}\t${stats.periodRepeaterRate}\t${stats.periodRepeaters}\t${totalAllTimeUU}\t${stats.allTimeCoverageRate}\t${stats.existingUserRate}\t${stats.existingUserCount}`;
 
