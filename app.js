@@ -905,7 +905,14 @@ async function loadAccessDataForCast(castName) {
         globalAccessDataMap.set(dateStr, total);
       }
     });
+    const sortedDates = [...globalAccessDataMap.keys()].sort();
     console.log(`GA4アクセスデータ読み込み完了 (${siteName}): ${globalAccessDataMap.size}件`);
+    if (sortedDates.length > 0) {
+      console.log(`  期間: ${sortedDates[0]} 〜 ${sortedDates[sortedDates.length - 1]}`);
+      console.log('  日付一覧:', sortedDates.join(', '));
+    } else {
+      console.warn('  取得できた日付が0件です。Firestoreにデータが存在するか確認してください。');
+    }
   } catch (e) {
     console.warn('GA4アクセスデータの取得に失敗しました:', e.message);
   }
