@@ -877,10 +877,6 @@ async function loadAccessData() {
       // Firestoreに文字列として保存されている場合はJSONパース
       cachedAccessData = typeof raw === 'string' ? JSON.parse(raw) : raw;
       console.log(`アクセスデータ読み込み完了: ${cachedAccessData.length}件`);
-      // デバッグ: 最初のエントリのキー一覧
-      if (cachedAccessData.length > 0) {
-        console.log('アクセスデータのキー:', Object.keys(cachedAccessData[0]));
-      }
     } else {
       cachedAccessData = [];
       console.warn('アクセスデータ(jsonData)が見つかりませんでした。');
@@ -893,25 +889,30 @@ async function loadAccessData() {
 }
 
 /**
- * キャスト名に対応するJSONデータのプレフィックスを探します。
- * 例: キャスト名「まりの」→ プレフィックス「まりの」、「まり」→「まりの」
+ * キャスト名に対応するJSONの列名を返します。
+ * 「{名前}アクセス」列がある場合はそれを、
+ * 「{名前}」列が直接ある場合はそれを返します。
  */
-function findCastAccessPrefix(castName, jsonData) {
+function findCastAccessKey(castName, jsonData) {
   if (!jsonData || jsonData.length === 0 || !castName) return null;
 
-  // 「アクセス」で終わるキーからプレフィックスを抽出
   const sampleEntry = jsonData[0];
-  const prefixes = Object.keys(sampleEntry)
-    .filter(k => k.endsWith('アクセス') && k !== 'アクセス')
-    .map(k => k.slice(0, -4)); // 末尾の「アクセス」(4文字)を除去
+  const allKeys = Object.keys(sampleEntry);
+
+  // パターン1: 列名そのものがキャスト名（サフィックスなし）
+  if (allKeys.includes(castName)) return castName;
+
+  // パターン2: 「{prefix}アクセス」列のプレフィックス一覧を構築
+  const accessKeys = allKeys.filter(k => k.endsWith('アクセス') && k !== 'アクセス');
+  const prefixes = accessKeys.map(k => k.slice(0, -4));
 
   // 完全一致
-  if (prefixes.includes(castName)) return castName;
+  if (prefixes.includes(castName)) return castName + 'アクセス';
 
   // 前方一致（キャスト名がプレフィックスで始まる、またはその逆）
   for (const prefix of prefixes) {
     if (castName.startsWith(prefix) || prefix.startsWith(castName)) {
-      return prefix;
+      return prefix + 'アクセス';
     }
   }
 
@@ -930,19 +931,20 @@ function findCastAccessPrefix(castName, jsonData) {
       }
     }
   }
+  if (bestScore >= 2) return bestPrefix + 'アクセス';
 
-  return bestScore >= 2 ? bestPrefix : null;
+  return null;
 }
 
 /**
- * JSONデータから指定プレフィックスのアクセス数を日付別Mapに変換します。
+ * JSONデータから指定列のアクセス数を日付別Mapに変換します。
  * M/D形式の日付に年を付与します（年末年始をまたぐ際の年推定あり）。
  */
-function buildAccessDateMap(castPrefix, jsonData) {
+function buildAccessDateMap(columnKey, jsonData) {
   const map = new Map();
-  if (!jsonData || jsonData.length === 0 || !castPrefix) return map;
+  if (!jsonData || jsonData.length === 0 || !columnKey) return map;
 
-  const accessKey = castPrefix + 'アクセス';
+  const accessKey = columnKey;
 
   // 最終エントリの月を基準に年を推定
   const today = new Date();
@@ -976,7 +978,8 @@ function buildAccessDateMap(castPrefix, jsonData) {
     if (accessVal !== undefined && accessVal !== '#N/A' && accessVal !== null && accessVal !== '') {
       const num = parseInt(accessVal, 10);
       if (!isNaN(num) && num >= 0) {
-        map.set(dateStr, num);
+        // 同じ日付で複数行ある場合は最大値を採用
+        map.set(dateStr, Math.max(map.get(dateStr) || 0, num));
       }
     }
   }
@@ -992,13 +995,13 @@ async function loadAccessDataForCast(castName) {
   const jsonData = await loadAccessData();
   if (!jsonData || jsonData.length === 0) return;
 
-  const prefix = findCastAccessPrefix(castName, jsonData);
-  if (!prefix) {
+  const columnKey = findCastAccessKey(castName, jsonData);
+  if (!columnKey) {
     console.warn(`キャスト「${castName}」に対応するアクセスデータが見つかりませんでした。`);
     return;
   }
-  console.log(`キャスト「${castName}」のアクセスデータプレフィックス: 「${prefix}」`);
-  globalAccessDataMap = buildAccessDateMap(prefix, jsonData);
+  console.log(`キャスト「${castName}」のアクセス列: 「${columnKey}」`);
+  globalAccessDataMap = buildAccessDateMap(columnKey, jsonData);
   console.log(`アクセスデータマップ構築完了: ${globalAccessDataMap.size}件`);
 }
 
