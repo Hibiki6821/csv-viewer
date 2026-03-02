@@ -813,7 +813,7 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
   allSnap.forEach(d => allRecords.push(d.data()));
   return allRecords.filter(r => {
     if (!r.orderDate) return false;
-    const d = new Date(r.orderDate.split(' ')[0]);
+    const d = new Date(r.orderDate.split(' ')[0].replace(/\//g, '-'));
     return d >= startDate && d <= endDate;
   });
 }
@@ -1080,7 +1080,7 @@ function analyzeFilteredData(records, period) {
 
   for (const record of records) {
     if (record.status === '取引完了') {
-      const orderDateStr = record.orderDate.split(' ')[0];
+      const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
       const orderDate = new Date(orderDateStr);
 
       // 期間チェック
@@ -1251,7 +1251,7 @@ function renderCharts(dailyStats) {
     const genreStats = {};
     globalAllRecords.forEach(record => {
         if (record.status === '取引完了') {
-            const orderDate = new Date(record.orderDate.split(' ')[0]);
+            const orderDate = new Date(record.orderDate.split(' ')[0].replace(/\//g, '-'));
             if (orderDate >= startDate) {
                 const type = record.productType || '未分類';
                 if (!genreStats[type]) genreStats[type] = 0;
@@ -1324,7 +1324,7 @@ function renderUserAnalysis() {
         const isTargetPrice = includeFreeProductsInAnalysis ? true : price > 0;
 
         if (record.status === '取引完了' && isTargetPrice) {
-            const orderDate = new Date(record.orderDate.split(' ')[0]);
+            const orderDate = new Date(record.orderDate.split(' ')[0].replace(/\//g, '-'));
             if (orderDate >= startDate) {
                 const uid = record.userId;
                 if (!userStats[uid]) {
@@ -1591,7 +1591,7 @@ function calculatePeriodStats(startDate, endDate, targetRecords, allTimeUniqueUs
 
     for (const record of targetRecords) {
         if (record.status === '取引完了') {
-            const orderDate = new Date(record.orderDate.split(' ')[0]);
+            const orderDate = new Date(record.orderDate.split(' ')[0].replace(/\//g, '-'));
 
             // 期間チェック
             if (orderDate >= startDate && orderDate <= endDate) {
@@ -1765,7 +1765,7 @@ async function handleRangeSummary() {
         if (exclude100Yen && price === 100) continue;
         const uid = record.userId;
         allTimeUniqueUsers.add(uid);
-        const orderDate = new Date(record.orderDate.split(' ')[0]);
+        const orderDate = new Date(record.orderDate.split(' ')[0].replace(/\//g, '-'));
         if (!userFirstOrderDates[uid] || orderDate < userFirstOrderDates[uid]) {
           userFirstOrderDates[uid] = orderDate;
         }
