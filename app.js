@@ -28,14 +28,11 @@ let unsubscribeCompanyGroups = null; // onSnapshotリスナー解除用
 let unsubscribeCasts = null; // onSnapshotリスナー解除用
 let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
-let globalDailyMetadata = {}; // 日別のアクティブユーザー数などのメタデータ
-let globalProductMetadata = {}; // 商品別のアクティブユーザー数などのメタデータ
 let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
-let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (JSONアクセスデータ)
-let cachedAccessData = null; // Firestoreから取得したJSONアクセスデータのキャッシュ
+let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (GA4アクセスデータ)
 
 // Chart.jsのインスタンス保持用
 let salesChartInstance = null;
@@ -864,145 +861,54 @@ function updateSummaryButtonStyles(period) {
 }
 
 /**
- * Firestoreの artifacts/{appId}/public/data ドキュメントから jsonData フィールドを取得します。
- * 結果はセッション中キャッシュされます。
- */
-async function loadAccessData() {
-  if (cachedAccessData !== null) return cachedAccessData;
-  try {
-    const dataDocRef = doc(db, `artifacts/${appId}/public/data`);
-    const snap = await getDoc(dataDocRef);
-    if (snap.exists() && snap.data().jsonData) {
-      const raw = snap.data().jsonData;
-      // Firestoreに文字列として保存されている場合はJSONパース
-      cachedAccessData = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      console.log(`アクセスデータ読み込み完了: ${cachedAccessData.length}件`);
-    } else {
-      cachedAccessData = [];
-      console.warn('アクセスデータ(jsonData)が見つかりませんでした。');
-    }
-  } catch (e) {
-    console.warn('アクセスデータの取得に失敗しました:', e.message);
-    cachedAccessData = [];
-  }
-  return cachedAccessData;
-}
-
-/**
- * キャスト名に対応するJSONの列名を返します。
- * 「{名前}アクセス」列がある場合はそれを、
- * 「{名前}」列が直接ある場合はそれを返します。
- */
-function findCastAccessKey(castName, jsonData) {
-  if (!jsonData || jsonData.length === 0 || !castName) return null;
-
-  const sampleEntry = jsonData[0];
-  const allKeys = Object.keys(sampleEntry);
-
-  // パターン1: 列名そのものがキャスト名（サフィックスなし）
-  if (allKeys.includes(castName)) return castName;
-
-  // パターン2: 「{prefix}アクセス」列のプレフィックス一覧を構築
-  const accessKeys = allKeys.filter(k => k.endsWith('アクセス') && k !== 'アクセス');
-  const prefixes = accessKeys.map(k => k.slice(0, -4));
-
-  // 完全一致
-  if (prefixes.includes(castName)) return castName + 'アクセス';
-
-  // 前方一致（キャスト名がプレフィックスで始まる、またはその逆）
-  for (const prefix of prefixes) {
-    if (castName.startsWith(prefix) || prefix.startsWith(castName)) {
-      return prefix + 'アクセス';
-    }
-  }
-
-  // 部分一致（先頭2文字以上が一致するもの）
-  let bestPrefix = null;
-  let bestScore = 0;
-  for (const prefix of prefixes) {
-    const minLen = Math.min(castName.length, prefix.length);
-    for (let len = minLen; len >= 2; len--) {
-      if (castName.slice(0, len) === prefix.slice(0, len)) {
-        if (len > bestScore) {
-          bestScore = len;
-          bestPrefix = prefix;
-        }
-        break;
-      }
-    }
-  }
-  if (bestScore >= 2) return bestPrefix + 'アクセス';
-
-  return null;
-}
-
-/**
- * JSONデータから指定列のアクセス数を日付別Mapに変換します。
- * M/D形式の日付に年を付与します（年末年始をまたぐ際の年推定あり）。
- */
-function buildAccessDateMap(columnKey, jsonData) {
-  const map = new Map();
-  if (!jsonData || jsonData.length === 0 || !columnKey) return map;
-
-  const accessKey = columnKey;
-
-  // 最終エントリの月を基準に年を推定
-  const today = new Date();
-  const lastEntry = jsonData[jsonData.length - 1];
-  const lastParts = lastEntry['日付'].split('/');
-  const lastMonth = parseInt(lastParts[0]);
-  const lastDay = parseInt(lastParts[1]);
-
-  let year = today.getFullYear();
-  // 最終エントリが現在の日付より未来になる場合は昨年とみなす
-  if (new Date(year, lastMonth - 1, lastDay) > today) {
-    year--;
-  }
-
-  // 配列を末尾から走査し、月が増加したとき（1月→12月へさかのぼる）年を1引く
-  let prevMonth = lastMonth;
-  for (let i = jsonData.length - 1; i >= 0; i--) {
-    const entry = jsonData[i];
-    const parts = entry['日付'].split('/');
-    const month = parseInt(parts[0]);
-    const day = parseInt(parts[1]);
-
-    // 過去方向への走査で月が増加する = 年をまたいだ（1月→12月）
-    if (i < jsonData.length - 1 && month > prevMonth) {
-      year--;
-    }
-    prevMonth = month;
-
-    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    const accessVal = entry[accessKey];
-    if (accessVal !== undefined && accessVal !== '#N/A' && accessVal !== null && accessVal !== '') {
-      const num = parseInt(accessVal, 10);
-      if (!isNaN(num) && num >= 0) {
-        // 同じ日付で複数行ある場合は最大値を採用
-        map.set(dateStr, Math.max(map.get(dateStr) || 0, num));
-      }
-    }
-  }
-
-  return map;
-}
-
-/**
- * キャスト名に対応するアクセスデータを globalAccessDataMap に設定します。
+ * GA4ボットが書き込んだ Firestore のアクセスデータを読み込み globalAccessDataMap に設定します。
+ * パス: artifacts/fantia-analyzer-app/accessdata/{siteName}/Daily/{YYYY-MM-DD}
+ * 各ドキュメントの Total フィールドをアクセス数として使用します。
  */
 async function loadAccessDataForCast(castName) {
   globalAccessDataMap = new Map();
-  const jsonData = await loadAccessData();
-  if (!jsonData || jsonData.length === 0) return;
+  if (!castName) return;
 
-  const columnKey = findCastAccessKey(castName, jsonData);
-  if (!columnKey) {
-    console.warn(`キャスト「${castName}」に対応するアクセスデータが見つかりませんでした。`);
+  // ga4apibot.py の PROPERTIES と同じサイト名一覧
+  const SITE_NAMES = ['まりの', 'こおり', 'もりゆか', 'かなめりあ', '夜猫みるく', 'あい'];
+
+  // キャスト名と一致するサイト名を探す（前方一致・部分一致含む）
+  let siteName = SITE_NAMES.find(s => s === castName)
+    || SITE_NAMES.find(s => castName.startsWith(s) || s.startsWith(castName));
+  if (!siteName) {
+    // 先頭2文字以上の部分一致
+    let best = null, bestScore = 0;
+    for (const s of SITE_NAMES) {
+      const minLen = Math.min(castName.length, s.length);
+      for (let len = minLen; len >= 2; len--) {
+        if (castName.slice(0, len) === s.slice(0, len)) {
+          if (len > bestScore) { bestScore = len; best = s; }
+          break;
+        }
+      }
+    }
+    siteName = best;
+  }
+
+  if (!siteName) {
+    console.warn(`キャスト「${castName}」に対応するGA4サイトが見つかりませんでした。`);
     return;
   }
-  console.log(`キャスト「${castName}」のアクセス列: 「${columnKey}」`);
-  globalAccessDataMap = buildAccessDateMap(columnKey, jsonData);
-  console.log(`アクセスデータマップ構築完了: ${globalAccessDataMap.size}件`);
+
+  try {
+    const dailyColRef = collection(db, `artifacts/${appId}/accessdata/${siteName}/Daily`);
+    const snap = await getDocs(dailyColRef);
+    snap.forEach(docSnap => {
+      const dateStr = docSnap.id; // YYYY-MM-DD
+      const total = docSnap.data().Total;
+      if (typeof total === 'number' && total >= 0) {
+        globalAccessDataMap.set(dateStr, total);
+      }
+    });
+    console.log(`GA4アクセスデータ読み込み完了 (${siteName}): ${globalAccessDataMap.size}件`);
+  } catch (e) {
+    console.warn('GA4アクセスデータの取得に失敗しました:', e.message);
+  }
 }
 
 /**
@@ -1021,37 +927,6 @@ async function loadCastData(castId) {
     // 現在の期間設定に基づいてデータを読み込む
     await loadOrdersForPeriod(castId, companyGroupId);
     
-    // 日別メタデータ（アクティブユーザー数など）の読み込み
-    globalDailyMetadata = {};
-    try {
-      const metadataColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/dailyMetadata`);
-      const metadataSnapshot = await getDocs(metadataColRef);
-      metadataSnapshot.forEach(doc => {
-        globalDailyMetadata[doc.id] = doc.data();
-      });
-      console.log("日別メタデータ読み込み完了:", Object.keys(globalDailyMetadata).length, "件");
-    } catch (e) {
-      console.warn("日別メタデータの読み込みに失敗 (初回はデータがない可能性があります):", e);
-    }
-
-    // 商品別メタデータ（アクティブユーザー数など）の読み込み
-    globalProductMetadata = {};
-    try {
-      const productMetadataColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/productMetadata`);
-      const productMetadataSnapshot = await getDocs(productMetadataColRef);
-      productMetadataSnapshot.forEach(doc => {
-        // ドキュメントIDはハッシュ化されている可能性があるため、フィールドのproductNameをキーにするのが確実だが、
-        // 保存時にproductNameフィールドを含めている前提で処理する
-        const data = doc.data();
-        if (data.productName) {
-            globalProductMetadata[data.productName] = data;
-        }
-      });
-      console.log("商品別メタデータ読み込み完了:", Object.keys(globalProductMetadata).length, "件");
-    } catch (e) {
-      console.warn("商品別メタデータの読み込みに失敗 (初回はデータがない可能性があります):", e);
-    }
-
     console.log(`データ読み込み完了。${globalAllRecords.length}件の注文データを取得。`);
 
     // キャスト名を取得してアクセスデータをロード
@@ -1307,11 +1182,9 @@ function renderCharts(dailyStats) {
     const labels = sortedDates;
     const revenueData = sortedDates.map(date => dailyStats[date].revenue);
     const cvrData = sortedDates.map(date => {
-        const jsonAccess = globalAccessDataMap.get(date) || 0;
-        const metaAccess = globalDailyMetadata[date]?.activeUsers || 0;
-        const activeUsers = jsonAccess || metaAccess; // JSONデータを優先
+        const access = globalAccessDataMap.get(date) || 0;
         const purchaseUU = dailyStats[date].uniqueUsers.size;
-        return activeUsers > 0 ? (purchaseUU / activeUsers) * 100 : 0;
+        return access > 0 ? (purchaseUU / access) * 100 : 0;
     });
 
     salesChartInstance = new Chart(ctxSales, {
@@ -1578,36 +1451,11 @@ function createProductStatsTable(productStats) {
 
   let tableRows = sortedProducts.map(([name, stats]) => {
     const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
-    
-    // 商品別のアクティブユーザー数を取得
-    const activeUsers = globalProductMetadata[name]?.activeUsers || '';
-    
-    // CVR計算 (購入者UU / アクティブユーザー * 100)
-    let cvrDisplay = '-';
-    if (activeUsers && activeUsers > 0) {
-        const purchaseUU = stats.uniqueUsers.size;
-        const cvr = (purchaseUU / activeUsers) * 100;
-        cvrDisplay = cvr.toFixed(2) + '%';
-    }
-    
-    // 商品名をエンコードして属性にセット（JSでの取得用）
-    const encodedName = btoa(String.fromCharCode(...new TextEncoder().encode(name)));
 
     return `
                 <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
                     <td class="p-3 text-sm text-gray-700 font-medium break-words max-w-xs">${name}</td>
-                    <td class="p-3 text-center" onclick="event.stopPropagation()">
-                        <input type="number" 
-                            class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm" 
-                            placeholder="UU入力" 
-                            autocomplete="off"
-                            value="${activeUsers}" 
-                            data-product-encoded="${encodedName}"
-                            onchange="window.saveProductActiveUsers(this)"
-                            min="0">
-                    </td>
                     <td class="p-3 text-right text-sm font-medium">${stats.uniqueUsers.size.toLocaleString()}</td>
-                    <td class="p-3 text-right text-sm font-semibold text-blue-600">${cvrDisplay}</td>
                     <td class="p-3 text-right text-sm">${stats.quantity.toLocaleString()}</td>
                     <td class="p-3 text-right text-sm font-semibold text-green-600">${stats.revenue.toLocaleString()}円</td>
                     <td class="p-3 text-right text-xs text-gray-500">${avgPurchase.toFixed(2)}</td>
@@ -1616,20 +1464,18 @@ function createProductStatsTable(productStats) {
   }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="7" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="5" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">商品別レポート</h2>
-                <div class="overflow-x-auto max-h-[80vh]"> <!-- 縦並びにしたので高さを少し拡張 -->
-                    <table id="productStatsTable" class="w-full min-w-[800px]"> <!-- 横幅を確保 -->
+                <div class="overflow-x-auto max-h-[80vh]">
+                    <table id="productStatsTable" class="w-full min-w-[600px]">
                         <thead class="bg-gray-50 sticky top-0 z-10">
                             <tr>
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/3">商品名</th>
-                                <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">アクティブ<br>ユーザー</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者数</th>
-                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">平均/人</th>
@@ -1650,45 +1496,33 @@ function createDailyStatsTable(dailyStats) {
   const sortedDates = Object.keys(dailyStats).sort((a, b) => new Date(b) - new Date(a));
 
   let tableRows = sortedDates.map(date => {
-    // アクティブユーザー数の取得（メタデータから）
-    const activeUsers = globalDailyMetadata[date]?.activeUsers || '';
     // 購入者UU数
     const purchaseUU = dailyStats[date].uniqueUsers.size;
 
-    // JSONアクセスデータ
-    const jsonAccess = globalAccessDataMap.get(date);
-    const accessDisplay = jsonAccess !== undefined
-      ? `<span class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">${jsonAccess.toLocaleString()}</span>`
+    // GA4アクセスデータ
+    const access = globalAccessDataMap.get(date);
+    const accessDisplay = access !== undefined
+      ? `<span class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">${access.toLocaleString()}</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
 
     // ARPU = 売上 ÷ アクセス数
-    const arpu = (jsonAccess !== undefined && jsonAccess > 0)
-      ? Math.round(dailyStats[date].revenue / jsonAccess)
+    const arpu = (access !== undefined && access > 0)
+      ? Math.round(dailyStats[date].revenue / access)
       : null;
     const arpuDisplay = arpu !== null
       ? `<span class="font-semibold text-purple-600">${arpu.toLocaleString()}円</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
 
-    // CVR計算 (購入UU / アクセス数 or アクティブユーザー)
-    const accessForCvr = jsonAccess || (activeUsers ? parseInt(activeUsers, 10) : 0);
+    // CVR計算 (購入UU / アクセス数)
     let cvrDisplay = '-';
-    if (accessForCvr > 0) {
-        const cvr = (purchaseUU / accessForCvr) * 100;
+    if (access > 0) {
+        const cvr = (purchaseUU / access) * 100;
         cvrDisplay = cvr.toFixed(2) + '%';
     }
 
     return `
             <tr class="border-b border-gray-200 hover:bg-gray-50 cursor-pointer" onclick="window.showDailyDetailsModal('${date}')">
                 <td class="p-3 text-sm text-gray-700 whitespace-nowrap">${date}</td>
-                <td class="p-3 text-center" onclick="event.stopPropagation()">
-                    <input type="number"
-                           class="w-24 px-2 py-1 text-right border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500 text-sm"
-                           placeholder="UU入力"
-                           autocomplete="off"
-                           value="${activeUsers}"
-                           onchange="window.saveActiveUsers('${date}', this.value)"
-                           min="0">
-                </td>
                 <td class="p-3 text-right text-sm font-medium">${purchaseUU.toLocaleString()}</td>
                 <td class="p-3 text-right text-sm font-semibold text-blue-600">${cvrDisplay}</td>
                 <td class="p-3 text-right text-sm">${accessDisplay}</td>
@@ -1700,21 +1534,20 @@ function createDailyStatsTable(dailyStats) {
   }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="8" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="7" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">日別レポート (クリックで詳細)</h2>
                 <div class="overflow-x-auto max-h-[80vh]">
-                    <table class="w-full min-w-[700px]">
+                    <table class="w-full min-w-[600px]">
                         <thead class="bg-gray-50 sticky top-0 z-10">
                             <tr>
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">日付</th>
-                                <th class="p-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider">手動<br>UU入力</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者<br>(UU)</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
-                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">アクセス数<br><span class="text-gray-400 normal-case font-normal">(JSON)</span></th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">アクセス数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">ARPU</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
@@ -1727,90 +1560,6 @@ function createDailyStatsTable(dailyStats) {
         `;
 }
 
-/**
- * 日別アクティブユーザー数を保存し、CVRを再計算します。
- */
-window.saveActiveUsers = async (date, value) => {
-  const numValue = parseInt(value, 10);
-  
-  if (isNaN(numValue) || numValue < 0) {
-      if (value !== '') alert("有効な数値を入力してください");
-      return;
-  }
-
-  const companyGroupId = companyGroupSelector.value;
-  const castId = castSelector.value;
-  
-  if (!companyGroupId || !castId) return;
-
-  try {
-      // グローバルデータを即時更新してUIに反映（UX向上）
-      if (!globalDailyMetadata[date]) globalDailyMetadata[date] = {};
-      globalDailyMetadata[date].activeUsers = numValue;
-      
-      // ビューを更新 (CVR再計算のため)
-      updateViewFromGlobalData();
-
-      // Firestoreに保存
-      const metadataDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/dailyMetadata/${date}`);
-      await setDoc(metadataDocRef, { activeUsers: numValue }, { merge: true });
-      
-      console.log(`${date} のアクティブユーザー数を保存: ${numValue}`);
-
-  } catch (error) {
-      console.error("アクティブユーザー数の保存に失敗:", error);
-      alert("保存に失敗しました。");
-  }
-};
-
-/**
- * 商品別アクティブユーザー数を保存し、CVRを再計算します。
- */
-window.saveProductActiveUsers = async (inputElement) => {
-  const value = inputElement.value;
-  const encodedName = inputElement.getAttribute('data-product-encoded');
-  // Base64デコード -> URIデコード で元の日本語商品名に戻す
-  const productName = new TextDecoder().decode(Uint8Array.from(atob(encodedName), c => c.charCodeAt(0)));
-
-  const numValue = parseInt(value, 10);
-  
-  if (isNaN(numValue) || numValue < 0) {
-      if (value !== '') alert("有効な数値を入力してください");
-      return;
-  }
-
-  const companyGroupId = companyGroupSelector.value;
-  const castId = castSelector.value;
-  
-  if (!companyGroupId || !castId) return;
-
-  try {
-      // グローバルデータを即時更新
-      if (!globalProductMetadata[productName]) globalProductMetadata[productName] = {};
-      globalProductMetadata[productName].activeUsers = numValue;
-      
-      // ビューを更新
-      updateViewFromGlobalData();
-
-      // Firestoreに保存 (ドキュメントIDは安全のためハッシュ化した方が良いが、
-      // 読み込み時のマッピング簡易化のため今回はSHA-1ハッシュをIDとし、データ内に商品名を含める)
-      const hashBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(productName));
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const docId = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
-      const productMetaDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/productMetadata/${docId}`);
-      await setDoc(productMetaDocRef, { 
-          productName: productName,
-          activeUsers: numValue 
-      }, { merge: true });
-      
-      console.log(`商品「${productName}」のアクティブユーザー数を保存: ${numValue}`);
-
-  } catch (error) {
-      console.error("商品別アクティブユーザー数の保存に失敗:", error);
-      alert("保存に失敗しました。");
-  }
-};
 
 
 function displayError(message) {
