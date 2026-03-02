@@ -28,11 +28,12 @@ let unsubscribeCompanyGroups = null; // onSnapshotリスナー解除用
 let unsubscribeCasts = null; // onSnapshotリスナー解除用
 let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
-let currentSummaryPeriod = 'all'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
+let currentSummaryPeriod = 'monthly'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
 let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (GA4アクセスデータ)
+let globalPageDataByDate = new Map(); // Map<'YYYY-MM-DD', {pageTitle: {screenPageViews, activeUsers}}>
 
 // Chart.jsのインスタンス保持用
 let salesChartInstance = null;
@@ -867,6 +868,7 @@ function updateSummaryButtonStyles(period) {
  */
 async function loadAccessDataForCast(castName) {
   globalAccessDataMap = new Map();
+  globalPageDataByDate = new Map();
   if (!castName) return;
 
   // ga4apibot.py の PROPERTIES と同じサイト名一覧
@@ -900,9 +902,12 @@ async function loadAccessDataForCast(castName) {
     const snap = await getDocs(dailyColRef);
     snap.forEach(docSnap => {
       const dateStr = docSnap.id; // YYYY-MM-DD
-      const total = docSnap.data().Total;
-      if (typeof total === 'number' && total >= 0) {
-        globalAccessDataMap.set(dateStr, total);
+      const data = docSnap.data();
+      if (typeof data.Total === 'number' && data.Total >= 0) {
+        globalAccessDataMap.set(dateStr, data.Total);
+      }
+      if (data.pages && typeof data.pages === 'object') {
+        globalPageDataByDate.set(dateStr, data.pages);
       }
     });
     const sortedDates = [...globalAccessDataMap.keys()].sort();
@@ -916,6 +921,26 @@ async function loadAccessDataForCast(castName) {
   } catch (e) {
     console.warn('GA4アクセスデータの取得に失敗しました:', e.message);
   }
+}
+
+/**
+ * 指定期間のページ別アクセスデータを集計します。
+ * キーはページタイトルの先頭10文字。値は {screenPageViews, activeUsers} の合計。
+ */
+function buildProductAccessMap(startDate, endDate) {
+  const map = new Map();
+  for (const [dateStr, pages] of globalPageDataByDate) {
+    const d = new Date(dateStr);
+    if (d < startDate || (endDate && d > endDate)) continue;
+    for (const [pageTitle, stats] of Object.entries(pages)) {
+      const key = pageTitle.slice(0, 10);
+      if (!map.has(key)) map.set(key, { screenPageViews: 0, activeUsers: 0 });
+      const entry = map.get(key);
+      entry.screenPageViews += (stats.screenPageViews || 0);
+      entry.activeUsers += (stats.activeUsers || 0);
+    }
+  }
+  return map;
 }
 
 /**
@@ -1136,6 +1161,16 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
   // ジャンル表示用のラベル作成
   let genreLabel = currentProductTypeFilter === 'all' ? '' : `（${currentProductTypeFilter}）`;
 
+  // 現在の期間に対応する商品別アクセスマップを構築
+  const now = new Date();
+  let periodStart;
+  switch (currentSummaryPeriod) {
+    case 'monthly': periodStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
+    case 'weekly':  periodStart = new Date(now.getTime() -  7 * 24 * 60 * 60 * 1000); break;
+    default:        periodStart = new Date('2000-01-01'); break;
+  }
+  const productAccessMap = buildProductAccessMap(periodStart, now);
+
   resultsContainer.innerHTML = `
             ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel)}
             
@@ -1159,7 +1194,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
             <div id="userAnalysisArea"></div>
 
             <div class="space-y-6"> <!-- 縦並びに変更: gridを削除しspace-yを使用 -->
-                ${createProductStatsTable(productStats)}
+                ${createProductStatsTable(productStats, productAccessMap)}
                 ${createDailyStatsTable(dailyStats)}
             </div>
         `;
@@ -1453,16 +1488,32 @@ function createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel
 /**
  * 商品別レポートのHTMLを生成します。
  */
-function createProductStatsTable(productStats) {
+function createProductStatsTable(productStats, productAccessMap = new Map()) {
   const sortedProducts = Object.entries(productStats).sort(([, a], [, b]) => b.revenue - a.revenue);
 
   let tableRows = sortedProducts.map(([name, stats]) => {
     const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
+    const purchaseUU = stats.uniqueUsers.size;
+
+    // ページアクセスデータ（先頭10文字マッチング）
+    const pageAccess = productAccessMap.get(name.slice(0, 10));
+    const activeUsersDisp = pageAccess
+      ? `<span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono">${pageAccess.activeUsers.toLocaleString()}</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
+    const pvDisp = pageAccess
+      ? `<span class="text-xs text-gray-500 font-mono">${pageAccess.screenPageViews.toLocaleString()}</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
+    const cvrDisp = (pageAccess && pageAccess.activeUsers > 0)
+      ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.activeUsers) * 100).toFixed(2)}%</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
 
     return `
                 <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
                     <td class="p-3 text-sm text-gray-700 font-medium break-words max-w-xs">${name}</td>
-                    <td class="p-3 text-right text-sm font-medium">${stats.uniqueUsers.size.toLocaleString()}</td>
+                    <td class="p-3 text-right text-sm">${activeUsersDisp}</td>
+                    <td class="p-3 text-right text-sm">${pvDisp}</td>
+                    <td class="p-3 text-right text-sm">${cvrDisp}</td>
+                    <td class="p-3 text-right text-sm font-medium">${purchaseUU.toLocaleString()}</td>
                     <td class="p-3 text-right text-sm">${stats.quantity.toLocaleString()}</td>
                     <td class="p-3 text-right text-sm font-semibold text-green-600">${stats.revenue.toLocaleString()}円</td>
                     <td class="p-3 text-right text-xs text-gray-500">${avgPurchase.toFixed(2)}</td>
@@ -1471,17 +1522,20 @@ function createProductStatsTable(productStats) {
   }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="5" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="8" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
                 <h2 class="text-xl font-bold text-gray-800 mb-4">商品別レポート</h2>
                 <div class="overflow-x-auto max-h-[80vh]">
-                    <table id="productStatsTable" class="w-full min-w-[600px]">
+                    <table id="productStatsTable" class="w-full min-w-[750px]">
                         <thead class="bg-gray-50 sticky top-0 z-10">
                             <tr>
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/3">商品名</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">アクセスUU</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">PV</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">売上</th>
@@ -1796,7 +1850,9 @@ async function handleRangeSummary() {
     }
     const accessInfo = totalAccess > 0 ? { totalAccess, compTotalAccess } : null;
 
-    updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel, accessInfo);
+    const productAccessMap = buildProductAccessMap(startDate, endDate);
+
+    updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel, accessInfo, productAccessMap);
   } catch (error) {
     console.error("期間指定レポートエラー:", error);
     alert("データの取得中にエラーが発生しました: " + error.message);
@@ -1807,7 +1863,7 @@ async function handleRangeSummary() {
 }
 
 
-function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, comparisonLabel, accessInfo = null) {
+function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, comparisonLabel, accessInfo = null, productAccessMap = new Map()) {
   let genreText = currentProductTypeFilter === 'all' ? '' : `<span class="text-sm font-normal ml-2">(${currentProductTypeFilter})</span>`;
 
   const arpu = accessInfo && accessInfo.totalAccess > 0 ? Math.round(stats.totalRevenue / accessInfo.totalAccess) : null;
@@ -1911,10 +1967,20 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
      const purchaseUU = pStats.uniqueUsers.size;
      const purchaseRate = stats.userCount > 0 ? ((purchaseUU / stats.userCount) * 100).toFixed(1) : '0.0';
 
+     const pageAccess = productAccessMap.get(name.slice(0, 10));
+     const activeUsersDisp = pageAccess
+       ? `<span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono">${pageAccess.activeUsers.toLocaleString()}</span>`
+       : '<span class="text-gray-300 text-xs">-</span>';
+     const cvrDisp = (pageAccess && pageAccess.activeUsers > 0)
+       ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.activeUsers) * 100).toFixed(2)}%</span>`
+       : '<span class="text-gray-300 text-xs">-</span>';
+
      return `
              <tr class="border-t border-gray-200" data-search-name="${name.toLowerCase()}">
                  <td class="p-3 text-sm text-gray-600 break-words max-w-xs">${name}</td>
                  <td class="p-3 text-right text-sm text-gray-800">${unitPrice.toLocaleString()}円</td>
+                 <td class="p-3 text-right">${activeUsersDisp}</td>
+                 <td class="p-3 text-right">${cvrDisp}</td>
                  <td class="p-3 text-right text-sm font-medium text-blue-600">
                     ${purchaseUU.toLocaleString()}人
                     <span class="block text-xs text-gray-400">(${purchaseRate}%)</span>
@@ -1933,13 +1999,15 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
                         <tr>
                             <th class="p-3 text-left font-semibold text-gray-600 w-1/3">商品名</th>
                             <th class="p-3 text-right font-semibold text-gray-600">単価(平均)</th>
+                            <th class="p-3 text-right font-semibold text-gray-600">アクセスUU</th>
+                            <th class="p-3 text-right font-semibold text-gray-600">CVR</th>
                             <th class="p-3 text-right font-semibold text-gray-600">購入者数(率)</th>
                             <th class="p-3 text-right font-semibold text-gray-600">販売個数</th>
                             <th class="p-3 text-right font-semibold text-gray-600">売上</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${productRows.length > 0 ? productRows : '<tr><td colspan="5" class="text-center p-4 text-gray-500">該当期間にデータはありません。</td></tr>'}
+                        ${productRows.length > 0 ? productRows : '<tr><td colspan="7" class="text-center p-4 text-gray-500">該当期間にデータはありません。</td></tr>'}
                     </tbody>
                 </table>
              </div>
