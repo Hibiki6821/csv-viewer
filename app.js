@@ -928,19 +928,33 @@ async function loadAccessDataForCast(castName) {
  * キーはページタイトルの先頭10文字。値は {screenPageViews, activeUsers} の合計。
  */
 function buildProductAccessMap(startDate, endDate) {
-  const map = new Map();
+  const map = new Map(); // key = フルページタイトル
   for (const [dateStr, pages] of globalPageDataByDate) {
     const d = new Date(dateStr);
     if (d < startDate || (endDate && d > endDate)) continue;
     for (const [pageTitle, stats] of Object.entries(pages)) {
-      const key = pageTitle.slice(0, 10);
-      if (!map.has(key)) map.set(key, { screenPageViews: 0, activeUsers: 0 });
-      const entry = map.get(key);
+      if (!map.has(pageTitle)) map.set(pageTitle, { screenPageViews: 0, activeUsers: 0 });
+      const entry = map.get(pageTitle);
       entry.screenPageViews += (stats.screenPageViews || 0);
       entry.activeUsers += (stats.activeUsers || 0);
     }
   }
   return map;
+}
+
+/**
+ * 商品名がページタイトルに含まれるエントリを集計して返します。
+ */
+function getProductAccessFromMap(productAccessMap, productName) {
+  let combined = null;
+  for (const [pageTitle, access] of productAccessMap) {
+    if (pageTitle.includes(productName)) {
+      if (!combined) combined = { screenPageViews: 0, activeUsers: 0 };
+      combined.screenPageViews += access.screenPageViews;
+      combined.activeUsers += access.activeUsers;
+    }
+  }
+  return combined;
 }
 
 /**
@@ -1495,8 +1509,8 @@ function createProductStatsTable(productStats, productAccessMap = new Map()) {
     const avgPurchase = stats.uniqueUsers.size > 0 ? stats.quantity / stats.uniqueUsers.size : 0;
     const purchaseUU = stats.uniqueUsers.size;
 
-    // ページアクセスデータ（先頭10文字マッチング）
-    const pageAccess = productAccessMap.get(name.slice(0, 10));
+    // ページアクセスデータ（商品名がページタイトルに含まれるかでマッチング）
+    const pageAccess = getProductAccessFromMap(productAccessMap, name);
     const activeUsersDisp = pageAccess
       ? `<span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono">${pageAccess.activeUsers.toLocaleString()}</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
@@ -1967,7 +1981,7 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
      const purchaseUU = pStats.uniqueUsers.size;
      const purchaseRate = stats.userCount > 0 ? ((purchaseUU / stats.userCount) * 100).toFixed(1) : '0.0';
 
-     const pageAccess = productAccessMap.get(name.slice(0, 10));
+     const pageAccess = getProductAccessFromMap(productAccessMap, name);
      const activeUsersDisp = pageAccess
        ? `<span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono">${pageAccess.activeUsers.toLocaleString()}</span>`
        : '<span class="text-gray-300 text-xs">-</span>';
