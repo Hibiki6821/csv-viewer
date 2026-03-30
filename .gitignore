@@ -1,0 +1,13 @@
+# Firebase service account keys
+*.json
+!package.json
+
+# GA4 / secrets
+ga4apibot.py
+
+# Fantia uploader (Python scripts + credentials)
+fantia_uploader/
+
+# Misc
+*.png
+*.jpg
