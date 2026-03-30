@@ -37,6 +37,7 @@ let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (GA4ア�
 let globalPageDataByDate = new Map(); // Map<'YYYY-MM-DD', {pageTitle: {screenPageViews, activeUsers}}>
 let globalChannelDataMap = new Map(); // Map<'YYYY-MM-DD', {Direct, 'Organic Social', Referral, ...}>
 let globalSourceBreakdownMap = new Map(); // Map<'YYYY-MM-DD', {channel: {sourceMedium: sessions}}>
+let globalReferrerPathBreakdownMap = new Map(); // Map<'YYYY-MM-DD', {channel: {"domain/path": sessions}}>
 
 // Chart.jsのインスタンス保持用
 let salesChartInstance = null;
@@ -1088,6 +1089,7 @@ async function loadAccessDataForCast(castName) {
   globalPageDataByDate = new Map();
   globalChannelDataMap = new Map();
   globalSourceBreakdownMap = new Map();
+  globalReferrerPathBreakdownMap = new Map();
   if (!castName) return;
 
   const siteName = castName;
@@ -1099,6 +1101,7 @@ async function loadAccessDataForCast(castName) {
     globalPageDataByDate = new Map(cached.pageMap);
     globalChannelDataMap = new Map(cached.channelMap || []);
     globalSourceBreakdownMap = new Map(cached.sourceMap || []);
+    globalReferrerPathBreakdownMap = new Map(cached.refPathMap || []);
     return;
   }
 
@@ -1131,6 +1134,9 @@ async function loadAccessDataForCast(castName) {
       if (data.sources && typeof data.sources === 'object') {
         globalSourceBreakdownMap.set(dateStr, data.sources);
       }
+      if (data.referrerPaths && typeof data.referrerPaths === 'object') {
+        globalReferrerPathBreakdownMap.set(dateStr, data.referrerPaths);
+      }
       if (data.pages && typeof data.pages === 'object') {
         globalPageDataByDate.set(dateStr, data.pages);
       }
@@ -1149,6 +1155,7 @@ async function loadAccessDataForCast(castName) {
       pageMap: new Map(globalPageDataByDate),
       channelMap: new Map(globalChannelDataMap),
       sourceMap: new Map(globalSourceBreakdownMap),
+      refPathMap: new Map(globalReferrerPathBreakdownMap),
     });
   } catch (e) {
     console.warn('GA4アクセスデータの取得に失敗しました:', e.message);
@@ -1170,6 +1177,7 @@ function buildProductAccessMap(startDate, endDate) {
         activeUsers: 0,
         channels: {},
         sources: {},
+        referrerPaths: {},
       });
       const entry = map.get(pageTitle);
       entry.screenPageViews += (stats.screenPageViews || 0);
@@ -1184,6 +1192,11 @@ function buildProductAccessMap(startDate, endDate) {
           entry.sources[src] = (entry.sources[src] || 0) + (count || 0);
         }
       }
+      if (stats.referrerPaths && typeof stats.referrerPaths === 'object') {
+        for (const [pathKey, count] of Object.entries(stats.referrerPaths)) {
+          entry.referrerPaths[pathKey] = (entry.referrerPaths[pathKey] || 0) + (count || 0);
+        }
+      }
     }
   }
   return map;
@@ -1196,7 +1209,7 @@ function getProductAccessFromMap(productAccessMap, productName) {
   let combined = null;
   for (const [pageTitle, access] of productAccessMap) {
     if (pageTitle.includes(productName)) {
-      if (!combined) combined = { screenPageViews: 0, activeUsers: 0, channels: {}, sources: {} };
+      if (!combined) combined = { screenPageViews: 0, activeUsers: 0, channels: {}, sources: {}, referrerPaths: {} };
       combined.screenPageViews += access.screenPageViews;
       combined.activeUsers += access.activeUsers;
       if (access.channels) {
@@ -1207,6 +1220,11 @@ function getProductAccessFromMap(productAccessMap, productName) {
       if (access.sources) {
         for (const [src, count] of Object.entries(access.sources)) {
           combined.sources[src] = (combined.sources[src] || 0) + count;
+        }
+      }
+      if (access.referrerPaths) {
+        for (const [pathKey, count] of Object.entries(access.referrerPaths)) {
+          combined.referrerPaths[pathKey] = (combined.referrerPaths[pathKey] || 0) + count;
         }
       }
     }
@@ -2596,8 +2614,9 @@ function renderSourceBreakdownTable(sourceMap = {}) {
 }
 
 window.showChannelBreakdownModal = (date, channel) => {
-  const byChannel = globalSourceBreakdownMap.get(date) || {};
-  const sourceMap = byChannel[channel] || {};
+  const byChannelPath = globalReferrerPathBreakdownMap.get(date) || {};
+  const byChannelSource = globalSourceBreakdownMap.get(date) || {};
+  const sourceMap = byChannelPath[channel] || byChannelSource[channel] || {};
   openDetailsModal(`${date} / ${channel} の流入元内訳`, renderSourceBreakdownTable(sourceMap));
 };
 
@@ -2627,7 +2646,10 @@ window.showProductTrafficModal = (productName) => {
       <div class="mt-2">${topChannels || '<span class="text-xs text-gray-400">チャネル内訳なし</span>'}</div>
     </div>
   `;
-  openDetailsModal(`${productName} の流入元内訳`, header + renderSourceBreakdownTable(access.sources || {}));
+  const detailedSourceMap = access.referrerPaths && Object.keys(access.referrerPaths).length > 0
+    ? access.referrerPaths
+    : (access.sources || {});
+  openDetailsModal(`${productName} の流入元内訳`, header + renderSourceBreakdownTable(detailedSourceMap));
 };
 
 window.showDailyDetailsModal = (date) => {
