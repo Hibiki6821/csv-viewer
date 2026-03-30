@@ -148,7 +148,7 @@ function showMainContentAndInitApp() {
 
   // メインコンテンツのイベントリスナーを設定
   setupEventListeners();
-  switchTab('dashboard');
+  switchTab('cast-detail');
   initMonthQuickSelect();
 }
 
@@ -522,9 +522,6 @@ function loadCastsForCompanyGroup(companyGroupId) {
     }
     enableCastManagement();
     renderKpiCastList();
-    if (currentTab === 'dashboard') {
-      loadDashboardData(companyGroupId);
-    }
 
   }, (error) => {
     console.error("キャスト一覧の読み込みに失敗:", error);
@@ -2327,13 +2324,13 @@ function switchTab(tabName) {
     }
   });
 
-  // ダッシュボード: 同じグループのデータが既にある場合はスキップ
-  if (tabName === 'dashboard') {
-    const groupId = companyGroupSelector ? companyGroupSelector.value : '';
-    if (groupId && groupId !== dashboardLoadedForGroupId) {
-      loadDashboardData(groupId);
-    }
-  }
+  // ダッシュボード一時無効化
+  // if (tabName === 'dashboard') {
+  //   const groupId = companyGroupSelector ? companyGroupSelector.value : '';
+  //   if (groupId && groupId !== dashboardLoadedForGroupId) {
+  //     loadDashboardData(groupId);
+  //   }
+  // }
 
   // KPIタブに切り替えたときにキャストリストを描画
   if (tabName === 'kpi') {
