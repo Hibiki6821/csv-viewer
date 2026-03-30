@@ -909,6 +909,28 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
     return [];
   }
 
+  // 月次アーカイブが存在すればそちらから取得（個別ドキュメントより大幅に読み取り数が少ない）
+  const monthlyColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/monthly`);
+  const startMonth = toMonthStr(startDate);
+  const endMonth = toMonthStr(endDate);
+  const archiveRangeQ = query(
+    monthlyColRef,
+    where(documentId(), '>=', startMonth),
+    where(documentId(), '<=', endMonth)
+  );
+  const archiveRangeSnap = await getDocs(archiveRangeQ);
+  if (!archiveRangeSnap.empty) {
+    const records = [];
+    archiveRangeSnap.forEach(d => {
+      for (const order of (d.data().orders || [])) {
+        const dateStr = (order.orderDate || '').slice(0, 10);
+        if (dateStr >= startStr && dateStr <= endStr) records.push(order);
+      }
+    });
+    ordersRangeCache.set(rangeKey, records);
+    return records;
+  }
+
   // 新フォーマット: ドキュメントID = YYYY-MM-DD_orderId → documentId() 範囲クエリ（インデックス不要・高速）
   const newFmtQ = query(
     ordersColRef,
