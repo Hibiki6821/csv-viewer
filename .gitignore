@@ -4,6 +4,7 @@
 
 # GA4 / secrets
 ga4apibot.py
+copy_koori_to_minamiyui.py
 
 # Fantia uploader (Python scripts + credentials)
 fantia_uploader/
