@@ -36,6 +36,7 @@ let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品�
 let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (GA4アクセスデータ)
 let globalPageDataByDate = new Map(); // Map<'YYYY-MM-DD', {pageTitle: {screenPageViews, activeUsers}}>
 let globalChannelDataMap = new Map(); // Map<'YYYY-MM-DD', {Direct, 'Organic Social', Referral, ...}>
+let globalSourceBreakdownMap = new Map(); // Map<'YYYY-MM-DD', {channel: {sourceMedium: sessions}}>
 
 // Chart.jsのインスタンス保持用
 let salesChartInstance = null;
@@ -1086,6 +1087,7 @@ async function loadAccessDataForCast(castName) {
   globalAccessDataMap = new Map();
   globalPageDataByDate = new Map();
   globalChannelDataMap = new Map();
+  globalSourceBreakdownMap = new Map();
   if (!castName) return;
 
   const siteName = castName;
@@ -1096,6 +1098,7 @@ async function loadAccessDataForCast(castName) {
     globalAccessDataMap = new Map(cached.accessMap);
     globalPageDataByDate = new Map(cached.pageMap);
     globalChannelDataMap = new Map(cached.channelMap || []);
+    globalSourceBreakdownMap = new Map(cached.sourceMap || []);
     return;
   }
 
@@ -1125,6 +1128,9 @@ async function loadAccessDataForCast(castName) {
       if (Object.keys(channelEntry).length > 0) {
         globalChannelDataMap.set(dateStr, channelEntry);
       }
+      if (data.sources && typeof data.sources === 'object') {
+        globalSourceBreakdownMap.set(dateStr, data.sources);
+      }
       if (data.pages && typeof data.pages === 'object') {
         globalPageDataByDate.set(dateStr, data.pages);
       }
@@ -1142,6 +1148,7 @@ async function loadAccessDataForCast(castName) {
       accessMap: new Map(globalAccessDataMap),
       pageMap: new Map(globalPageDataByDate),
       channelMap: new Map(globalChannelDataMap),
+      sourceMap: new Map(globalSourceBreakdownMap),
     });
   } catch (e) {
     console.warn('GA4アクセスデータの取得に失敗しました:', e.message);
@@ -1150,7 +1157,7 @@ async function loadAccessDataForCast(castName) {
 
 /**
  * 指定期間のページ別アクセスデータを集計します。
- * キーはページタイトルの先頭10文字。値は {screenPageViews, activeUsers} の合計。
+ * キーはページタイトル。値は {screenPageViews, activeUsers, channels, sources} の合計。
  */
 function buildProductAccessMap(startDate, endDate) {
   const map = new Map(); // key = フルページタイトル
@@ -1158,10 +1165,25 @@ function buildProductAccessMap(startDate, endDate) {
     const d = new Date(dateStr);
     if (d < startDate || (endDate && d > endDate)) continue;
     for (const [pageTitle, stats] of Object.entries(pages)) {
-      if (!map.has(pageTitle)) map.set(pageTitle, { screenPageViews: 0, activeUsers: 0 });
+      if (!map.has(pageTitle)) map.set(pageTitle, {
+        screenPageViews: 0,
+        activeUsers: 0,
+        channels: {},
+        sources: {},
+      });
       const entry = map.get(pageTitle);
       entry.screenPageViews += (stats.screenPageViews || 0);
       entry.activeUsers += (stats.activeUsers || 0);
+      if (stats.channels && typeof stats.channels === 'object') {
+        for (const [ch, count] of Object.entries(stats.channels)) {
+          entry.channels[ch] = (entry.channels[ch] || 0) + (count || 0);
+        }
+      }
+      if (stats.sources && typeof stats.sources === 'object') {
+        for (const [src, count] of Object.entries(stats.sources)) {
+          entry.sources[src] = (entry.sources[src] || 0) + (count || 0);
+        }
+      }
     }
   }
   return map;
@@ -1174,9 +1196,19 @@ function getProductAccessFromMap(productAccessMap, productName) {
   let combined = null;
   for (const [pageTitle, access] of productAccessMap) {
     if (pageTitle.includes(productName)) {
-      if (!combined) combined = { screenPageViews: 0, activeUsers: 0 };
+      if (!combined) combined = { screenPageViews: 0, activeUsers: 0, channels: {}, sources: {} };
       combined.screenPageViews += access.screenPageViews;
       combined.activeUsers += access.activeUsers;
+      if (access.channels) {
+        for (const [ch, count] of Object.entries(access.channels)) {
+          combined.channels[ch] = (combined.channels[ch] || 0) + count;
+        }
+      }
+      if (access.sources) {
+        for (const [src, count] of Object.entries(access.sources)) {
+          combined.sources[src] = (combined.sources[src] || 0) + count;
+        }
+      }
     }
   }
   return combined;
@@ -1479,6 +1511,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
             </div>
 
             <div class="space-y-6">
+                ${createTrafficSourceTable(periodStart, now)}
                 ${createDailyStatsTable(dailyStats)}
                 ${createProductStatsTable(productStats, productAccessMap)}
             </div>
@@ -1571,6 +1604,18 @@ function renderCharts(dailyStats) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            onClick: (_event, elements) => {
+                if (!elements || elements.length === 0) return;
+                const point = elements[0];
+                const datasetIndex = point.datasetIndex;
+                const dataIndex = point.index;
+                // 0=売上, 1=CVR, 2以降=チャネル
+                if (datasetIndex < 2) return;
+                const channel = CHANNEL_CONFIG[datasetIndex - 2]?.key;
+                const date = labels[dataIndex];
+                if (!channel || !date) return;
+                window.showChannelBreakdownModal(date, channel);
+            },
             scales: {
                 y: {
                     type: 'linear',
@@ -1810,6 +1855,63 @@ window.toggleFreeProductsInAnalysis = (checked) => {
     renderUserAnalysis();
 }
 
+function createTrafficSourceTable(startDate, endDate) {
+  const sourceTotals = {};
+  const channelTotals = {};
+  for (const [dateStr, byChannel] of globalSourceBreakdownMap) {
+    const d = new Date(dateStr);
+    if (d < startDate || d > endDate) continue;
+    for (const [channel, srcMap] of Object.entries(byChannel || {})) {
+      channelTotals[channel] = (channelTotals[channel] || 0) + Object.values(srcMap).reduce((s, v) => s + (v || 0), 0);
+      for (const [src, count] of Object.entries(srcMap || {})) {
+        sourceTotals[src] = (sourceTotals[src] || 0) + (count || 0);
+      }
+    }
+  }
+
+  const topSources = Object.entries(sourceTotals).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const topChannels = Object.entries(channelTotals).sort((a, b) => b[1] - a[1]);
+  if (topSources.length === 0 && topChannels.length === 0) {
+    return `
+      <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+        <h2 class="text-xl font-bold text-gray-800 mb-3">流入元内訳</h2>
+        <p class="text-sm text-slate-500">GA4の source/medium データがまだありません。ga4apibot.py 実行後に表示されます。</p>
+      </div>
+    `;
+  }
+
+  const channelBadges = topChannels.map(([name, count]) => `
+    <span class="inline-flex items-center px-2 py-1 rounded bg-slate-100 text-slate-700 text-xs font-medium mr-1 mb-1">
+      ${name}: ${count.toLocaleString()}
+    </span>
+  `).join('');
+
+  const sourceRows = topSources.map(([src, count]) => `
+    <tr class="border-b border-gray-100">
+      <td class="p-2 text-sm text-slate-700">${src}</td>
+      <td class="p-2 text-right text-sm font-semibold text-slate-800">${count.toLocaleString()}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+      <h2 class="text-xl font-bold text-gray-800 mb-3">流入元内訳</h2>
+      <div class="mb-3">${channelBadges || '<span class="text-xs text-slate-400">チャネルデータなし</span>'}</div>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[420px]">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="p-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">source / medium</th>
+              <th class="p-2 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">セッション</th>
+            </tr>
+          </thead>
+          <tbody>${sourceRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 /**
  * 全体サマリーカードのHTMLを生成します。
  */
@@ -1860,12 +1962,26 @@ function createProductStatsTable(productStats, productAccessMap = new Map()) {
     const cvrDisp = (pageAccess && pageAccess.activeUsers > 0)
       ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.activeUsers) * 100).toFixed(2)}%</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
+    const topSource = (pageAccess && pageAccess.sources)
+      ? Object.entries(pageAccess.sources).sort((a, b) => b[1] - a[1])[0]
+      : null;
+    const topChannel = (pageAccess && pageAccess.channels)
+      ? Object.entries(pageAccess.channels).sort((a, b) => b[1] - a[1])[0]
+      : null;
+    const topSourceDisp = topSource
+      ? `<span class="text-xs text-slate-700">${topSource[0]}</span><span class="block text-[10px] text-slate-400">${topSource[1].toLocaleString()}</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
+    const topChannelDisp = topChannel
+      ? `<span class="text-xs text-slate-700">${topChannel[0]}</span><span class="block text-[10px] text-slate-400">${topChannel[1].toLocaleString()}</span>`
+      : '<span class="text-gray-300 text-xs">-</span>';
 
     return `
-                <tr class="border-b border-gray-200 hover:bg-gray-50" data-search-name="${name.toLowerCase()}">
+                <tr class="border-b border-gray-200 hover:bg-gray-50 cursor-pointer" data-search-name="${name.toLowerCase()}" onclick="window.showProductTrafficModal('${name.replace(/'/g, "\\'")}')">
                     <td class="p-3 text-sm text-gray-700 font-medium break-words max-w-xs">${name}</td>
                     <td class="p-3 text-right text-sm">${activeUsersDisp}</td>
                     <td class="p-3 text-right text-sm">${pvDisp}</td>
+                    <td class="p-3 text-right text-sm">${topChannelDisp}</td>
+                    <td class="p-3 text-right text-sm">${topSourceDisp}</td>
                     <td class="p-3 text-right text-sm">${cvrDisp}</td>
                     <td class="p-3 text-right text-sm font-medium">${purchaseUU.toLocaleString()}</td>
                     <td class="p-3 text-right text-sm">${stats.quantity.toLocaleString()}</td>
@@ -1876,7 +1992,7 @@ function createProductStatsTable(productStats, productAccessMap = new Map()) {
   }).join('');
 
   if (!tableRows) {
-    tableRows = '<tr><td colspan="8" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
+    tableRows = '<tr><td colspan="10" class="text-center p-4 text-gray-500">データがありません。</td></tr>';
   }
 
   return `
@@ -1889,6 +2005,8 @@ function createProductStatsTable(productStats, productAccessMap = new Map()) {
                                 <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/3">商品名</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">アクセスUU</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">PV</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">主チャネル</th>
+                                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">主流入元</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">CVR</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">購入者数</th>
                                 <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">販売個数</th>
@@ -2444,6 +2562,73 @@ function applySearchFilter() {
 }
 
 // --- モーダル制御 ---
+
+function openDetailsModal(title, bodyHtml) {
+  modalTitle.textContent = title;
+  modalBody.innerHTML = bodyHtml;
+  dailyDetailsModal.classList.remove('opacity-0', 'pointer-events-none');
+  dailyDetailsModal.firstElementChild.classList.remove('scale-95');
+}
+
+function renderSourceBreakdownTable(sourceMap = {}) {
+  const rows = Object.entries(sourceMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 50)
+    .map(([src, sessions]) => `
+      <tr class="border-t border-gray-200">
+        <td class="p-3 text-sm text-gray-700 break-words">${src}</td>
+        <td class="p-3 text-right text-sm font-semibold text-slate-800">${sessions.toLocaleString()}</td>
+      </tr>
+    `).join('');
+  return `
+    <table class="w-full text-sm">
+      <thead class="border-b bg-gray-50">
+        <tr>
+          <th class="p-3 text-left font-semibold text-gray-600">source / medium</th>
+          <th class="p-3 text-right font-semibold text-gray-600">sessions</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows || '<tr><td colspan="2" class="p-4 text-center text-gray-400">データなし</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+window.showChannelBreakdownModal = (date, channel) => {
+  const byChannel = globalSourceBreakdownMap.get(date) || {};
+  const sourceMap = byChannel[channel] || {};
+  openDetailsModal(`${date} / ${channel} の流入元内訳`, renderSourceBreakdownTable(sourceMap));
+};
+
+window.showProductTrafficModal = (productName) => {
+  const now = new Date();
+  let periodStart;
+  switch (currentSummaryPeriod) {
+    case 'monthly': periodStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
+    case 'weekly': periodStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
+    default: periodStart = new Date('2000-01-01'); break;
+  }
+  const productAccessMap = buildProductAccessMap(periodStart, now);
+  const access = getProductAccessFromMap(productAccessMap, productName);
+  if (!access) {
+    openDetailsModal(`${productName} の流入元`, '<p class="text-sm text-gray-500">この商品のアクセスデータがありません。</p>');
+    return;
+  }
+
+  const topChannels = Object.entries(access.channels || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([ch, c]) => `<span class="inline-flex items-center px-2 py-1 rounded bg-slate-100 text-slate-700 text-xs font-medium mr-1 mb-1">${ch}: ${c.toLocaleString()}</span>`)
+    .join('');
+  const header = `
+    <div class="mb-3">
+      <p class="text-sm text-slate-700">PV: <span class="font-semibold">${(access.screenPageViews || 0).toLocaleString()}</span> / UU: <span class="font-semibold">${(access.activeUsers || 0).toLocaleString()}</span></p>
+      <div class="mt-2">${topChannels || '<span class="text-xs text-gray-400">チャネル内訳なし</span>'}</div>
+    </div>
+  `;
+  openDetailsModal(`${productName} の流入元内訳`, header + renderSourceBreakdownTable(access.sources || {}));
+};
 
 window.showDailyDetailsModal = (date) => {
   // globalDailyStatsは現在選択されているタブ（ジャンル）に基づいてフィルタリングされたデータ

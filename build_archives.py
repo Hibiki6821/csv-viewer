@@ -16,6 +16,11 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 CHUNK_SIZE = 800
+# Firestore Commit request が大きくなりすぎないようにするための上限
+# 実際の上限(10MiB)よりかなり低めに設定して安全側で分割する。
+MAX_BATCH_BYTES = 7_000_000
+MAX_BATCH_OPS = 60
+MAX_DELETE_OPS = 20
 
 config_path = Path(__file__).parent / 'fantia_uploader' / 'config.json'
 with open(config_path, encoding='utf-8') as f:
@@ -64,12 +69,16 @@ def build_archive_for_cast(cast_name: str):
     if existing:
         print(f'  既存アーカイブ {len(existing)} チャンクを削除中...')
         batch = db.batch()
-        for i, doc in enumerate(existing):
+        delete_ops = 0
+        for doc in existing:
             batch.delete(doc.reference)
-            if (i + 1) % 498 == 0:
+            delete_ops += 1
+            if delete_ops >= MAX_DELETE_OPS:
                 batch.commit()
                 batch = db.batch()
-        batch.commit()
+                delete_ops = 0
+        if delete_ops > 0:
+            batch.commit()
 
     # 全注文を読み込み
     print(f'  注文データ読み込み中...')
@@ -94,21 +103,48 @@ def build_archive_for_cast(cast_name: str):
         print(f'  日付不正でスキップ: {skipped} 件')
 
     # 月次アーカイブを書き込み（チャンク分割）
+    # 注意: 1回のcommitに大きなドキュメントを詰め込みすぎると
+    # "Transaction too big. Decrease transaction size." が発生するため、
+    # 件数と概算バイト数の両方で分割する。
     ts = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
     total_chunks = 0
+    batch = db.batch()
+    batch_ops = 0
+    batch_bytes = 0
+
+    def flush_batch():
+        nonlocal batch, batch_ops, batch_bytes
+        if batch_ops == 0:
+            return
+        batch.commit()
+        batch = db.batch()
+        batch_ops = 0
+        batch_bytes = 0
+
     for month in sorted(by_month.keys()):
         orders = by_month[month]
         chunks = [orders[i:i + CHUNK_SIZE] for i in range(0, len(orders), CHUNK_SIZE)]
-
-        batch = db.batch()
         for i, chunk in enumerate(chunks):
             chunk_id = month if i == 0 else f'{month}_{i}'
-            batch.set(monthly_ref.document(chunk_id), {'orders': chunk, 'lastUpdated': ts})
-        batch.commit()
+            doc_data = {'orders': chunk, 'lastUpdated': ts}
+            # json化した概算サイズでcommit分割
+            estimated_bytes = len(json.dumps(doc_data, ensure_ascii=False).encode('utf-8'))
+
+            if (
+                batch_ops >= MAX_BATCH_OPS
+                or (batch_ops > 0 and batch_bytes + estimated_bytes > MAX_BATCH_BYTES)
+            ):
+                flush_batch()
+
+            batch.set(monthly_ref.document(chunk_id), doc_data)
+            batch_ops += 1
+            batch_bytes += estimated_bytes
 
         total_chunks += len(chunks)
         chunk_info = f'{len(chunks)} チャンク' if len(chunks) > 1 else ''
         print(f'  {month}: {len(orders)} 件 {chunk_info}')
+
+    flush_batch()
 
     print(f'  → 合計 {sum(len(v) for v in by_month.values())} 件, {total_chunks} チャンク書き込み完了\n')
 
@@ -161,12 +197,16 @@ def build_daily_summary():
     if existing:
         print(f'  既存 {len(existing)} 件を削除中...')
         batch = db.batch()
-        for i, doc in enumerate(existing):
+        delete_ops = 0
+        for doc in existing:
             batch.delete(doc.reference)
-            if (i + 1) % 498 == 0:
+            delete_ops += 1
+            if delete_ops >= MAX_DELETE_OPS:
                 batch.commit()
                 batch = db.batch()
-        batch.commit()
+                delete_ops = 0
+        if delete_ops > 0:
+            batch.commit()
 
     ts = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
     batch = db.batch()
