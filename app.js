@@ -909,6 +909,16 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
     return [];
   }
 
+  // 全件キャッシュが既にある場合はメモリ内でフィルタ（Firestore読み取りゼロ）
+  if (allTimeOrdersCache.has(castKey)) {
+    const records = allTimeOrdersCache.get(castKey).filter(r => {
+      const dateStr = (r.orderDate || '').slice(0, 10);
+      return dateStr >= startStr && dateStr <= endStr;
+    });
+    ordersRangeCache.set(rangeKey, records);
+    return records;
+  }
+
   // 月次アーカイブが存在すればそちらから取得（個別ドキュメントより大幅に読み取り数が少ない）
   const monthlyColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/monthly`);
   const startMonth = toMonthStr(startDate);
