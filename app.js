@@ -953,7 +953,7 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
     const records = [];
     archiveRangeSnap.forEach(d => {
       for (const order of (d.data().orders || [])) {
-        const dateStr = (order.orderDate || '').slice(0, 10);
+        const dateStr = (order.orderDate || '').replace(/\//g, '-').slice(0, 10);
         if (dateStr >= startStr && dateStr <= endStr) records.push(order);
       }
     });
