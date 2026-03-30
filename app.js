@@ -736,8 +736,6 @@ async function saveDataToFirestore(castId, records, header) {
   let operationCount = 0;
   const companyGroupId = companyGroupSelector.value;
   const collectionRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
-  const affectedMonths = new Set();
-
   for (const record of records) {
     if (record.length < header.length) continue;
 
@@ -753,8 +751,6 @@ async function saveDataToFirestore(castId, records, header) {
     const rawDate = record[indices.date] || '';
     const normalizedDate = rawDate.replace(/\//g, '-');
     const datePrefix = normalizedDate.slice(0, 10); // YYYY-MM-DD
-    const monthPrefix = normalizedDate.slice(0, 7); // YYYY-MM
-    if (monthPrefix) affectedMonths.add(monthPrefix);
 
     const orderData = {
       orderId: orderId,
@@ -786,11 +782,6 @@ async function saveDataToFirestore(castId, records, header) {
     console.log(`最後のバッチをコミットしました (${operationCount}件)`);
   }
 
-  // 月次アーカイブを再構築
-  for (const month of affectedMonths) {
-    await buildAndSaveMonthlyArchive(castId, companyGroupId, month);
-  }
-
   // データ更新後は注文クエリキャッシュを破棄
   ordersRangeCache.clear();
   noDataCastIds.clear();
@@ -811,6 +802,27 @@ function toMonthStr(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+const ARCHIVE_CHUNK_SIZE = 800;
+
+/**
+ * ordersの配列を月次アーカイブとしてFirestoreに保存します（チャンク分割あり）。
+ * chunkId: orders <= CHUNK_SIZE なら yearMonth のみ、超える場合は yearMonth_1, yearMonth_2 ...
+ */
+async function saveArchiveChunks(monthlyColRef, yearMonth, orders) {
+  const ts = new Date().toISOString();
+  const saveBatch = writeBatch(db);
+  if (orders.length === 0) {
+    saveBatch.set(doc(monthlyColRef, yearMonth), { orders: [], lastUpdated: ts });
+  } else {
+    for (let i = 0; i * ARCHIVE_CHUNK_SIZE < orders.length; i++) {
+      const chunk = orders.slice(i * ARCHIVE_CHUNK_SIZE, (i + 1) * ARCHIVE_CHUNK_SIZE);
+      const chunkId = i === 0 ? yearMonth : `${yearMonth}_${i}`;
+      saveBatch.set(doc(monthlyColRef, chunkId), { orders: chunk, lastUpdated: ts });
+    }
+  }
+  await saveBatch.commit();
+}
+
 /**
  * 指定月の全注文をindividual docsから読み込み、月次アーカイブとして保存します。
  */
@@ -825,7 +837,7 @@ async function buildAndSaveMonthlyArchive(castId, companyGroupId, yearMonth) {
   const snap = await getDocs(q);
   const orders = [];
   snap.forEach(d => orders.push(d.data()));
-  await setDoc(doc(monthlyColRef, yearMonth), { orders, lastUpdated: new Date().toISOString() });
+  await saveArchiveChunks(monthlyColRef, yearMonth, orders);
   console.log(`月次アーカイブ作成: ${yearMonth} (${orders.length}件)`);
   return orders;
 }
@@ -849,27 +861,35 @@ async function fetchAllOrdersViaArchives(castId, companyGroupId) {
     // アーカイブ未作成: 全件取得してアーカイブを作成（初回のみ）
     console.log('月次アーカイブが存在しません。全件取得してアーカイブを作成します...');
     const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
-    const allSnap = await getDocs(query(ordersColRef));
+    let allSnap;
+    try {
+      allSnap = await getDocs(query(ordersColRef));
+    } catch (e) {
+      console.warn('全件取得に失敗しました（Quota等）:', e.message);
+      allTimeOrdersCache.set(castKey, []);
+      return [];
+    }
     const ordersByMonth = {};
     allRecords = [];
     allSnap.forEach(d => {
       const data = d.data();
-      const month = (data.orderDate || '').slice(0, 7);
+      const normalizedDate = (data.orderDate || '').replace(/\//g, '-');
+      const month = normalizedDate.slice(0, 7);
       if (month && /^\d{4}-\d{2}$/.test(month)) {
         if (!ordersByMonth[month]) ordersByMonth[month] = [];
-        ordersByMonth[month].push(data);
+        ordersByMonth[month].push({ ...data, orderDate: normalizedDate });
       }
-      allRecords.push(data);
+      allRecords.push({ ...data, orderDate: normalizedDate });
     });
-    // アーカイブをバックグラウンドで保存
+    // アーカイブをバックグラウンドで保存（チャンク分割）
     for (const [month, orders] of Object.entries(ordersByMonth)) {
-      setDoc(doc(monthlyColRef, month), { orders, lastUpdated: new Date().toISOString() })
+      saveArchiveChunks(monthlyColRef, month, orders)
         .catch(e => console.warn(`アーカイブ作成失敗 ${month}:`, e.message));
     }
   } else {
     allRecords = [];
     archiveSnap.forEach(d => allRecords.push(...(d.data().orders || [])));
-    console.log(`月次アーカイブから読み込み: ${archiveSnap.size}ヶ月, ${allRecords.length}件`);
+    console.log(`月次アーカイブから読み込み: ${archiveSnap.size}チャンク, ${allRecords.length}件`);
   }
 
   allTimeOrdersCache.set(castKey, allRecords);
@@ -912,7 +932,7 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
   // 全件キャッシュが既にある場合はメモリ内でフィルタ（Firestore読み取りゼロ）
   if (allTimeOrdersCache.has(castKey)) {
     const records = allTimeOrdersCache.get(castKey).filter(r => {
-      const dateStr = (r.orderDate || '').slice(0, 10);
+      const dateStr = (r.orderDate || '').replace(/\//g, '-').slice(0, 10);
       return dateStr >= startStr && dateStr <= endStr;
     });
     ordersRangeCache.set(rangeKey, records);
@@ -926,7 +946,7 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
   const archiveRangeQ = query(
     monthlyColRef,
     where(documentId(), '>=', startMonth),
-    where(documentId(), '<=', endMonth)
+    where(documentId(), '<=', endMonth + '\uf8ff')
   );
   const archiveRangeSnap = await getDocs(archiveRangeQ);
   if (!archiveRangeSnap.empty) {
