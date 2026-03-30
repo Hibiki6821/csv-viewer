@@ -640,6 +640,7 @@ function handleFileSelect(event) {
       const castKey = makeCastCacheKey(companyGroupId, castId);
       noDataCastIds.delete(castKey);
       newFormatCastIds.delete(castKey);
+      allTimeOrdersCache.delete(castKey);
       for (const key of ordersRangeCache.keys()) {
         if (key.startsWith(`${companyGroupId}:${castId}:`)) ordersRangeCache.delete(key);
       }
@@ -735,6 +736,7 @@ async function saveDataToFirestore(castId, records, header) {
   let operationCount = 0;
   const companyGroupId = companyGroupSelector.value;
   const collectionRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
+  const affectedMonths = new Set();
 
   for (const record of records) {
     if (record.length < header.length) continue;
@@ -751,6 +753,8 @@ async function saveDataToFirestore(castId, records, header) {
     const rawDate = record[indices.date] || '';
     const normalizedDate = rawDate.replace(/\//g, '-');
     const datePrefix = normalizedDate.slice(0, 10); // YYYY-MM-DD
+    const monthPrefix = normalizedDate.slice(0, 7); // YYYY-MM
+    if (monthPrefix) affectedMonths.add(monthPrefix);
 
     const orderData = {
       orderId: orderId,
@@ -782,9 +786,15 @@ async function saveDataToFirestore(castId, records, header) {
     console.log(`最後のバッチをコミットしました (${operationCount}件)`);
   }
 
+  // 月次アーカイブを再構築
+  for (const month of affectedMonths) {
+    await buildAndSaveMonthlyArchive(castId, companyGroupId, month);
+  }
+
   // データ更新後は注文クエリキャッシュを破棄
   ordersRangeCache.clear();
   noDataCastIds.clear();
+  allTimeOrdersCache.clear();
 }
 
 /**
@@ -795,6 +805,75 @@ function toDateStr(date) {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function toMonthStr(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * 指定月の全注文をindividual docsから読み込み、月次アーカイブとして保存します。
+ */
+async function buildAndSaveMonthlyArchive(castId, companyGroupId, yearMonth) {
+  const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
+  const monthlyColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/monthly`);
+  const q = query(
+    ordersColRef,
+    where(documentId(), '>=', yearMonth + '-01'),
+    where(documentId(), '<=', yearMonth + '-31\uf8ff')
+  );
+  const snap = await getDocs(q);
+  const orders = [];
+  snap.forEach(d => orders.push(d.data()));
+  await setDoc(doc(monthlyColRef, yearMonth), { orders, lastUpdated: new Date().toISOString() });
+  console.log(`月次アーカイブ作成: ${yearMonth} (${orders.length}件)`);
+  return orders;
+}
+
+/**
+ * 月次アーカイブを使って全件注文データを取得します。
+ * アーカイブが存在しない場合はindividual docsから全件取得してアーカイブを作成します。
+ * 結果はセッション中メモリにもキャッシュします。
+ */
+async function fetchAllOrdersViaArchives(castId, companyGroupId) {
+  const castKey = makeCastCacheKey(companyGroupId, castId);
+  if (allTimeOrdersCache.has(castKey)) {
+    return allTimeOrdersCache.get(castKey);
+  }
+
+  const monthlyColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/monthly`);
+  const archiveSnap = await getDocs(monthlyColRef);
+
+  let allRecords;
+  if (archiveSnap.empty) {
+    // アーカイブ未作成: 全件取得してアーカイブを作成（初回のみ）
+    console.log('月次アーカイブが存在しません。全件取得してアーカイブを作成します...');
+    const ordersColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
+    const allSnap = await getDocs(query(ordersColRef));
+    const ordersByMonth = {};
+    allRecords = [];
+    allSnap.forEach(d => {
+      const data = d.data();
+      const month = (data.orderDate || '').slice(0, 7);
+      if (month && /^\d{4}-\d{2}$/.test(month)) {
+        if (!ordersByMonth[month]) ordersByMonth[month] = [];
+        ordersByMonth[month].push(data);
+      }
+      allRecords.push(data);
+    });
+    // アーカイブをバックグラウンドで保存
+    for (const [month, orders] of Object.entries(ordersByMonth)) {
+      setDoc(doc(monthlyColRef, month), { orders, lastUpdated: new Date().toISOString() })
+        .catch(e => console.warn(`アーカイブ作成失敗 ${month}:`, e.message));
+    }
+  } else {
+    allRecords = [];
+    archiveSnap.forEach(d => allRecords.push(...(d.data().orders || [])));
+    console.log(`月次アーカイブから読み込み: ${archiveSnap.size}ヶ月, ${allRecords.length}件`);
+  }
+
+  allTimeOrdersCache.set(castKey, allRecords);
+  return allRecords;
 }
 
 function makeCastCacheKey(companyGroupId, castId) {
@@ -815,10 +894,7 @@ async function fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate) {
   const castKey = makeCastCacheKey(companyGroupId, castId);
 
   if (!startDate || !endDate) {
-    const snap = await getDocs(query(ordersColRef));
-    const records = [];
-    snap.forEach(d => records.push(d.data()));
-    return records;
+    return fetchAllOrdersViaArchives(castId, companyGroupId);
   }
 
   const startStr = toDateStr(startDate);
@@ -2272,6 +2348,8 @@ const noDataCastIds = new Set();
 const ordersRangeCache = new Map();
 // GA4アクセスデータのキャッシュ（key: siteName）
 const accessDataCacheBySite = new Map();
+// 全件取得結果のキャッシュ（key: groupId:castId）
+const allTimeOrdersCache = new Map();
 
 // -------------------------------------------------------------------
 // タブ切り替え
