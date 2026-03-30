@@ -1,4 +1,4 @@
-// Firebase SDK のインポート
+// Firebase SDK のインポート 南ゆい
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import {
   getAuth,
@@ -954,31 +954,7 @@ async function loadAccessDataForCast(castName) {
   globalPageDataByDate = new Map();
   if (!castName) return;
 
-  // ga4apibot.py の PROPERTIES と同じサイト名一覧
-  const SITE_NAMES = ['まりの', 'こおり', 'もりゆか', 'かなめりあ', '夜猫みるく', 'あい'];
-
-  // キャスト名と一致するサイト名を探す（前方一致・部分一致含む）
-  let siteName = SITE_NAMES.find(s => s === castName)
-    || SITE_NAMES.find(s => castName.startsWith(s) || s.startsWith(castName));
-  if (!siteName) {
-    // 先頭2文字以上の部分一致
-    let best = null, bestScore = 0;
-    for (const s of SITE_NAMES) {
-      const minLen = Math.min(castName.length, s.length);
-      for (let len = minLen; len >= 2; len--) {
-        if (castName.slice(0, len) === s.slice(0, len)) {
-          if (len > bestScore) { bestScore = len; best = s; }
-          break;
-        }
-      }
-    }
-    siteName = best;
-  }
-
-  if (!siteName) {
-    console.warn(`キャスト「${castName}」に対応するGA4サイトが見つかりませんでした。`);
-    return;
-  }
+  const siteName = castName;
 
   // 同一サイトはキャッシュを使って即時復元
   if (accessDataCacheBySite.has(siteName)) {
