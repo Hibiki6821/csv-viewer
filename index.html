@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fantia Analytics Dashboard</title>
+  <!-- Tailwind CSSを読み込み -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.jsを読み込み (CDN経由: グローバル変数 Chart を使用) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-slate-50 text-gray-800">
+
+  <!-- パスワード認証画面 -->
+  <div id="password-container" class="fixed inset-0 bg-gray-100 flex items-center justify-center z-50">
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-sm">
+      <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">認証が必要です</h2>
+      <form id="password-form">
+        <div class="mb-4">
+          <label for="password-input" class="block text-sm font-medium text-gray-700 mb-2">パスワード</label>
+          <input type="password" id="password-input" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="パスワードを入力" disabled>
+        </div>
+        <p id="error-message" class="hidden text-red-500 text-sm mb-4 text-center">パスワードが違います。</p>
+
+        <div class="mb-4 flex items-center">
+          <input type="checkbox" id="show-password-toggle" class="mr-2 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500" disabled>
+          <label for="show-password-toggle" class="text-sm font-medium text-gray-700 select-none cursor-pointer">パスワードを表示する</label>
+        </div>
+
+        <button type="submit" id="login-button" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+          <span id="login-button-text">ログイン</span>
+          <span id="login-button-spinner" class="hidden">
+            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            処理中...
+          </span>
+        </button>
+        <p id="password-loading-message" class="text-sm text-gray-500 text-center mt-4">認証システムを準備中...</p>
+      </form>
+    </div>
+  </div>
+
+  <!-- メインコンテンツ -->
+  <div id="main-content" class="hidden">
+
+    <!-- ===== 固定ヘッダー (56px) ===== -->
+    <header class="fixed top-0 left-0 right-0 h-14 bg-white border-b border-slate-200 shadow-sm z-40 flex items-center px-4 gap-4">
+      <!-- ロゴ / タイトル -->
+      <span class="font-bold text-blue-600 text-base tracking-tight shrink-0">Fantia Analytics</span>
+
+      <!-- 会社グループセレクタ -->
+      <div class="flex items-center gap-2 shrink-0">
+        <label for="companyGroupSelector" class="text-xs font-medium text-slate-500 hidden sm:block">グループ</label>
+        <select id="companyGroupSelector" class="text-sm px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100 bg-white min-w-[120px]" disabled>
+          <option value="">選択してください</option>
+        </select>
+      </div>
+
+      <!-- タブナビゲーション -->
+      <nav class="flex items-center gap-1 ml-2 overflow-x-auto">
+        <button id="tab-btn-dashboard"
+          onclick="switchTab('dashboard')"
+          class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap text-blue-600 bg-blue-50">
+          ダッシュボード
+        </button>
+        <button id="tab-btn-cast-detail"
+          onclick="switchTab('cast-detail')"
+          class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap text-slate-600 hover:bg-slate-100">
+          キャスト詳細
+        </button>
+        <button id="tab-btn-period-report"
+          onclick="switchTab('period-report')"
+          class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap text-slate-600 hover:bg-slate-100">
+          期間レポート
+        </button>
+        <button id="tab-btn-kpi"
+          onclick="switchTab('kpi')"
+          class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap text-slate-600 hover:bg-slate-100">
+          KPI管理
+        </button>
+      </nav>
+
+      <!-- 右端スペーサー / グループ追加UI (折りたたみ) -->
+      <div class="ml-auto flex items-center gap-2 shrink-0">
+        <input type="text" id="newCompanyGroupInput" placeholder="グループ追加..." class="text-xs px-2 py-1.5 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100 w-32 hidden sm:block" disabled>
+        <button id="addCompanyGroupButton" class="text-xs bg-green-500 text-white font-bold py-1.5 px-3 rounded-lg hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed hidden sm:block" disabled>追加</button>
+        <p id="companyGroupError" class="text-red-500 text-xs"></p>
+      </div>
+    </header>
+
+    <!-- ===== コンテンツエリア (top:56px, fixed) ===== -->
+    <div style="position:fixed;top:56px;left:0;right:0;bottom:0;">
+      <!-- タブパネルラッパー -->
+      <div style="position:relative;height:100%;">
+
+        <!-- ======================================================
+             タブ: ダッシュボード
+        ====================================================== -->
+        <div id="tab-dashboard" style="position:absolute;inset:0;overflow-y:auto;" class="bg-slate-50 p-4 sm:p-6">
+
+          <!-- ダッシュボード上部: 日付ラベル + リフレッシュボタン -->
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-lg font-bold text-slate-800">ダッシュボード</h2>
+              <p id="dashboardDateLabel" class="text-sm text-slate-500"></p>
+            </div>
+            <button onclick="window.refreshDashboard()" class="flex items-center gap-1.5 text-sm bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors shadow-sm">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              更新
+            </button>
+          </div>
+
+          <!-- アラートバナー -->
+          <div id="dashboardAlerts" class="mb-4 space-y-2"></div>
+
+          <!-- ローディングスケルトン -->
+          <div id="dashboardLoading" class="hidden">
+            <div class="mb-4">
+              <div class="flex justify-between text-xs text-slate-500 mb-1">
+                <span id="dashboardProgressText">読み込み中...</span>
+                <span id="dashboardProgressPercent">0%</span>
+              </div>
+              <div class="w-full bg-slate-200 rounded-full h-2">
+                <div id="dashboardProgressBar" class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width:0%"></div>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-6">
+              <div class="bg-white rounded-xl border border-slate-200 shadow-sm h-24 animate-pulse"></div>
+              <div class="bg-white rounded-xl border border-slate-200 shadow-sm h-24 animate-pulse"></div>
+              <div class="bg-white rounded-xl border border-slate-200 shadow-sm h-24 animate-pulse"></div>
+              <div class="bg-white rounded-xl border border-slate-200 shadow-sm h-24 animate-pulse"></div>
+            </div>
+          </div>
+
+          <!-- キャストカードグリッド -->
+          <div id="castCardsContainer" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 mb-6"></div>
+
+          <!-- チャートエリア -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <!-- 全体売上チャート (30日) -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+              <h3 class="text-sm font-semibold text-slate-700 mb-3">全体売上推移 (30日間)</h3>
+              <div class="relative" style="height:220px;">
+                <canvas id="overallRevenueChart"></canvas>
+              </div>
+            </div>
+            <!-- 全体アクセスチャート (30日) -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+              <h3 class="text-sm font-semibold text-slate-700 mb-3">全体アクセス推移 (30日間)</h3>
+              <div class="relative" style="height:220px;">
+                <canvas id="overallAccessChart"></canvas>
+              </div>
+              <p id="overallAccessChartNote" class="text-xs text-slate-400 text-center mt-1 hidden">アクセスデータはキャスト詳細タブでキャストを選択すると読み込まれます</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======================================================
+             タブ: キャスト詳細
+        ====================================================== -->
+        <div id="tab-cast-detail" style="position:absolute;inset:0;display:none;">
+          <div style="display:flex;height:100%;">
+
+            <!-- サイドバー -->
+            <aside class="bg-white border-r border-slate-200 overflow-y-auto shrink-0 w-72 p-4 space-y-5">
+
+              <!-- キャスト管理 -->
+              <div>
+                <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">キャスト管理</h2>
+
+                <div class="mb-3">
+                  <label for="castSelector" class="block text-xs font-medium text-slate-500 mb-1">分析するキャスト</label>
+                  <select id="castSelector" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
+                    <option value="">会社グループを選択してください</option>
+                  </select>
+                </div>
+
+                <!-- キャスト名編集 -->
+                <div id="editCastSection" class="mt-2 hidden">
+                  <label class="block text-xs font-medium text-slate-500 mb-1">キャスト名を編集</label>
+                  <div class="flex space-x-2">
+                    <input type="text" id="editCastNameInput" placeholder="新しい名前" class="flex-grow w-full px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                    <button id="editCastButton" class="bg-yellow-500 text-white font-bold py-1.5 px-3 text-sm rounded-lg hover:bg-yellow-600 transition-colors">保存</button>
+                  </div>
+                  <p id="editCastError" class="text-red-500 text-xs mt-1"></p>
+                </div>
+
+                <!-- キャスト追加 -->
+                <div class="mt-3">
+                  <label for="newCastNameInput" class="block text-xs font-medium text-slate-500 mb-1">キャストを追加</label>
+                  <div class="flex space-x-2">
+                    <input type="text" id="newCastNameInput" placeholder="キャスト名" class="flex-grow w-full px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
+                    <button id="addCastButton" class="bg-blue-500 text-white font-bold py-1.5 px-3 text-sm rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>追加</button>
+                  </div>
+                  <p id="castError" class="text-red-500 text-xs mt-1"></p>
+                  <p id="cast-loading-message" class="text-xs text-slate-500 text-center mt-2">データベースに接続中...</p>
+                </div>
+              </div>
+
+              <!-- サマリー期間選択 -->
+              <div class="border-t border-slate-100 pt-4">
+                <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">サマリー期間</h2>
+                <div class="flex space-x-2">
+                  <button id="summaryAllButton" class="flex-1 bg-blue-600 text-white font-bold py-1.5 px-2 text-xs rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>全体</button>
+                  <button id="summaryMonthlyButton" class="flex-1 bg-gray-500 text-white font-bold py-1.5 px-2 text-xs rounded-lg hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>月間</button>
+                  <button id="summaryWeeklyButton" class="flex-1 bg-gray-500 text-white font-bold py-1.5 px-2 text-xs rounded-lg hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>週間</button>
+                </div>
+              </div>
+
+              <!-- ファイルアップロード -->
+              <div id="upload-section" class="border-t border-slate-100 pt-4 hidden">
+                <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">データ更新</h2>
+                <div class="flex flex-col items-center">
+                  <svg class="w-8 h-8 text-blue-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                  </svg>
+                  <label for="csvFileInput" class="w-full cursor-pointer text-center text-xs font-medium text-slate-600 mb-1">
+                    CSVファイルを選択
+                  </label>
+                  <input type="file" id="csvFileInput" accept=".csv" class="block w-full text-xs text-slate-500
+                    file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0
+                    file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+                </div>
+              </div>
+            </aside>
+
+            <!-- 右コンテンツ -->
+            <main class="flex-1 overflow-y-auto bg-slate-50 p-4 sm:p-6">
+              <!-- 商品タイプフィルタ -->
+              <div id="productTypeFilterContainer" class="hidden mb-4">
+                <div id="productTypeTabs" class="flex flex-wrap gap-2"></div>
+              </div>
+
+              <!-- 検索バー -->
+              <div id="search-section" class="bg-white rounded-xl shadow-sm p-3 border border-slate-200 hidden mb-4">
+                <div class="relative">
+                  <input type="text" id="searchInput" placeholder="商品名で検索..." class="w-full px-4 py-2 pl-10 text-sm border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                  <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ローディングスピナー -->
+              <div id="loadingIndicator" class="hidden text-center mt-16">
+                <svg class="animate-spin h-10 w-10 text-blue-500 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <p class="mt-3 text-slate-500 text-sm" id="loadingIndicatorText">データを分析中...</p>
+                <div class="mt-3 mx-auto" style="max-width:240px;">
+                  <div class="flex justify-between text-xs text-slate-400 mb-1">
+                    <span></span>
+                    <span id="loadingProgressPercent">0%</span>
+                  </div>
+                  <div class="w-full bg-slate-200 rounded-full h-1.5">
+                    <div id="loadingProgressBar" class="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style="width:0%"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 結果表示コンテナ -->
+              <div id="resultsContainer" class="space-y-6"></div>
+            </main>
+          </div>
+        </div>
+
+        <!-- ======================================================
+             タブ: 期間レポート
+        ====================================================== -->
+        <div id="tab-period-report" style="position:absolute;inset:0;display:none;">
+          <div style="display:flex;height:100%;">
+
+            <!-- サイドバー -->
+            <aside class="bg-white border-r border-slate-200 overflow-y-auto shrink-0 w-72 p-4 space-y-5">
+
+              <!-- キャスト表示 -->
+              <div>
+                <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">対象キャスト</h2>
+                <p id="periodReportCastName" class="text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
+                  キャスト詳細タブでキャストを選択してください
+                </p>
+              </div>
+
+              <!-- 月クイック選択 -->
+              <div class="border-t border-slate-100 pt-4">
+                <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">月クイック選択</h2>
+                <div id="monthQuickSelect" class="space-y-2">
+                  <!-- JavaScriptで生成されます -->
+                </div>
+              </div>
+
+              <!-- 期間指定 -->
+              <div class="border-t border-slate-100 pt-4">
+                <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">期間指定レポート</h2>
+                <div class="space-y-3">
+                  <div>
+                    <label for="rangeStartDate" class="block text-xs font-medium text-slate-500 mb-1">開始日</label>
+                    <input type="date" id="rangeStartDate" class="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
+                  </div>
+                  <div>
+                    <label for="rangeEndDate" class="block text-xs font-medium text-slate-500 mb-1">終了日</label>
+                    <input type="date" id="rangeEndDate" class="w-full px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:bg-gray-100" disabled>
+                  </div>
+
+                  <!-- フィルターオプション -->
+                  <div class="space-y-2 pt-2 border-t border-slate-100">
+                    <div class="flex items-center">
+                      <input id="excludeFreeRangeCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" disabled>
+                      <label for="excludeFreeRangeCheckbox" class="ml-2 text-xs text-slate-700 cursor-pointer select-none">無料商品を除外</label>
+                    </div>
+                    <div class="flex items-center">
+                      <input id="exclude100YenRangeCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" disabled>
+                      <label for="exclude100YenRangeCheckbox" class="ml-2 text-xs text-slate-700 cursor-pointer select-none">100円商品を除外</label>
+                    </div>
+                  </div>
+
+                  <!-- 比較オプション -->
+                  <div class="pt-2 border-t border-slate-100">
+                    <div class="flex items-center mb-2">
+                      <input id="enableComparisonCheckbox" type="checkbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" disabled>
+                      <label for="enableComparisonCheckbox" class="ml-2 text-xs font-bold text-slate-700 cursor-pointer select-none">過去データと比較</label>
+                    </div>
+
+                    <div id="comparisonSettingsArea" class="hidden pl-4 space-y-2 mb-2">
+                      <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">比較対象</label>
+                        <select id="comparisonModeSelector" class="w-full text-xs px-2 py-1.5 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                          <option value="prev_month_full">前月全体 (1日〜末日)</option>
+                          <option value="prev_month_same_days">前月の同じ期間</option>
+                          <option value="custom">期間を自由に指定</option>
+                        </select>
+                      </div>
+
+                      <div id="customComparisonDates" class="hidden space-y-2">
+                        <div>
+                          <label class="block text-xs text-slate-400">比較開始</label>
+                          <input type="date" id="comparisonStartDate" class="w-full text-xs px-2 py-1 border border-slate-300 rounded">
+                        </div>
+                        <div>
+                          <label class="block text-xs text-slate-400">比較終了</label>
+                          <input type="date" id="comparisonEndDate" class="w-full text-xs px-2 py-1 border border-slate-300 rounded">
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button id="rangeSummaryButton" class="w-full bg-green-600 text-white font-bold py-2 px-4 text-sm rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                    この期間で集計
+                  </button>
+                </div>
+              </div>
+            </aside>
+
+            <!-- 右コンテンツ: 空状態 (結果はモーダルに出る) -->
+            <main class="flex-1 overflow-y-auto bg-slate-50 flex items-center justify-center">
+              <div class="text-center text-slate-400 p-8">
+                <svg class="w-16 h-16 mx-auto mb-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <p class="text-base font-medium">左のサイドバーで期間を選択して</p>
+                <p class="text-sm mt-1">「この期間で集計」を押すと<br>レポートがポップアップ表示されます</p>
+              </div>
+            </main>
+          </div>
+        </div>
+
+        <!-- ======================================================
+             タブ: KPI管理
+        ====================================================== -->
+        <div id="tab-kpi" style="position:absolute;inset:0;display:none;">
+          <div style="display:flex;height:100%;">
+
+            <!-- サイドバー: キャスト一覧 -->
+            <aside class="bg-white border-r border-slate-200 overflow-y-auto shrink-0 w-64 p-4">
+              <h2 class="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3">キャスト一覧</h2>
+              <div id="kpiCastList" class="space-y-1">
+                <p class="text-xs text-slate-400 text-center py-4">会社グループを選択してください</p>
+              </div>
+            </aside>
+
+            <!-- 右コンテンツ: KPIパネル -->
+            <main class="flex-1 overflow-y-auto bg-slate-50 p-4 sm:p-6">
+              <div id="kpiContent">
+                <div class="flex items-center justify-center h-full min-h-64 text-center text-slate-400">
+                  <div>
+                    <svg class="w-16 h-16 mx-auto mb-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                    </svg>
+                    <p class="text-base font-medium">左からキャストを選択してください</p>
+                    <p class="text-sm mt-1">月別KPI目標と実績を管理できます</p>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+
+      </div><!-- /タブパネルラッパー -->
+    </div><!-- /コンテンツエリア -->
+  </div><!-- /main-content -->
+
+  <!-- 日別詳細モーダル -->
+  <div id="dailyDetailsModal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 opacity-0 pointer-events-none">
+    <div class="modal-content bg-white rounded-xl shadow-lg w-full max-w-3xl m-4 transform scale-95">
+      <div class="flex justify-between items-center p-4 border-b border-gray-200">
+        <h3 id="modalTitle" class="text-xl font-bold text-gray-800"></h3>
+        <button onclick="hideDailyDetailsModal()" class="text-gray-400 hover:text-gray-600">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div id="modalBody" class="p-6 max-h-[70vh] overflow-y-auto"></div>
+    </div>
+  </div>
+
+  <!-- 期間指定集計モーダル -->
+  <div id="rangeSummaryModal" class="modal fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 opacity-0 pointer-events-none">
+    <div class="modal-content bg-white rounded-xl shadow-lg w-full max-w-3xl m-4 transform scale-95">
+      <div class="flex justify-between items-center p-4 border-b border-gray-200">
+        <h3 id="rangeModalTitle" class="text-xl font-bold text-gray-800">期間集計レポート</h3>
+        <button onclick="hideRangeSummaryModal()" class="text-gray-400 hover:text-gray-600">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div id="rangeModalBody" class="p-6 max-h-[70vh] overflow-y-auto"></div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+
+</body>
+</html>

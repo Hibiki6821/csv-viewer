@@ -1,0 +1,47 @@
+/* 日本語フォントと基本フォントを適用 */
+body {
+  font-family: 'Inter', 'Noto Sans JP', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ファイル入力のデザインを改善 */
+#csvFileInput {
+  transition: all 0.3s ease-in-out;
+}
+
+.rotate-180 {
+  transform: rotate(180deg);
+}
+
+/* モーダルのスタイル */
+.modal {
+  transition: opacity 0.25s ease;
+}
+
+.modal-content {
+  transition: transform 0.25s ease;
+}
+
+/* スクロールバーのカスタマイズ（任意） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* 数値入力フィールドのスピナーを消す（任意） */
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+  -webkit-appearance: none; 
+  margin: 0; 
+}
