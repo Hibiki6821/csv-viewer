@@ -128,7 +128,6 @@ function showMainContentAndInitApp() {
   rangeSummaryButton = document.getElementById('rangeSummaryButton');
   rangeSummaryModal = document.getElementById('rangeSummaryModal');
   rangeModalTitle = document.getElementById('rangeModalTitle');
-  rangeModalBody = document.getElementById('rangeModalBody');
   summaryAllButton = document.getElementById('summaryAllButton');
   summaryMonthlyButton = document.getElementById('summaryMonthlyButton');
   summaryWeeklyButton = document.getElementById('summaryWeeklyButton');
@@ -304,19 +303,10 @@ function setupEventListeners() {
     if (e.key === 'Enter') handleAddCompanyGroup();
   });
 
-  // キャスト選択
+  // castSelector は非表示だが、プログラムから value を変えたときのフォールバック
   castSelector.addEventListener('change', (e) => {
     const castId = e.target.value;
-    if (castId) {
-      loadCastData(castId);
-      uploadSection.classList.remove('hidden');
-      // 現在の名前を編集欄にセット
-      const selectedOption = castSelector.options[castSelector.selectedIndex];
-      editCastNameInput.value = selectedOption.textContent;
-      editCastError.textContent = '';
-      editCastSection.classList.remove('hidden');
-      syncPeriodReportCastName();
-    } else {
+    if (!castId) {
       uploadSection.classList.add('hidden');
       editCastSection.classList.add('hidden');
       resultsContainer.innerHTML = '';
@@ -520,6 +510,7 @@ function loadCastsForCompanyGroup(companyGroupId) {
       }
     }
     enableCastManagement();
+    renderCastTabs();
     renderKpiCastList();
 
   }, (error) => {
@@ -1315,7 +1306,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
 
   resultsContainer.innerHTML = `
             ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel)}
-            
+
             <!-- グラフエリア (2カラム) -->
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
                 <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 lg:col-span-2">
@@ -1332,13 +1323,14 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
                 </div>
             </div>
 
-            <!-- ユーザー分析エリア -->
-            <div id="userAnalysisArea"></div>
-
-            <div class="space-y-6"> <!-- 縦並びに変更: gridを削除しspace-yを使用 -->
-                ${createProductStatsTable(productStats, productAccessMap)}
+            <!-- 日別レポート → 商品レポート → ユーザー分析 -->
+            <div class="space-y-6">
                 ${createDailyStatsTable(dailyStats)}
+                ${createProductStatsTable(productStats, productAccessMap)}
             </div>
+
+            <!-- ユーザー分析エリア (最下部) -->
+            <div id="userAnalysisArea" class="mt-6"></div>
         `;
   
   // グラフ描画
@@ -1934,34 +1926,21 @@ async function handleRangeSummary() {
     }
   }
 
-  loadingIndicator.classList.remove('hidden');
+  const rangeLoadingEl = document.getElementById('rangeLoadingIndicator');
+  const rangeResultsEl = document.getElementById('rangeResultsContainer');
+  if (rangeLoadingEl) rangeLoadingEl.classList.remove('hidden');
+  if (rangeResultsEl) rangeResultsEl.innerHTML = '';
   rangeSummaryButton.disabled = true;
 
   try {
     const companyGroupId = companyGroupSelector.value;
     const castId = castSelector.value;
 
-    // 指定期間のデータをFirestoreから取得
-    let rangeRecords = await fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate);
-    if (currentProductTypeFilter !== 'all') {
-      rangeRecords = rangeRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
-    }
-
-    // 比較期間のデータを取得（有効な場合）
-    let compFilteredRecords = null;
-    let compRawRecords = [];
-    if (enableComparisonCheckbox.checked && compStartDate && compEndDate) {
-      compRawRecords = await fetchOrdersByPeriod(castId, companyGroupId, compStartDate, compEndDate);
-      compFilteredRecords = currentProductTypeFilter !== 'all'
-        ? compRawRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter)
-        : compRawRecords;
-    }
-
-    // allTimeUniqueUsers と userFirstOrderDates を
-    // rangeRecords + compRawRecords の union から計算（より正確な approximation）
+    // 全期間のデータを取得して userFirstOrderDates を正確に構築（継続率計算のため）
+    const allHistoricalRecords = await fetchOrdersByPeriod(castId, companyGroupId, null, null);
     const allTimeUniqueUsers = new Set();
     const userFirstOrderDates = {};
-    for (const record of [...rangeRecords, ...compRawRecords]) {
+    for (const record of allHistoricalRecords) {
       if (record.status === '取引完了') {
         const price = record.price || 0;
         if (excludeFree && price === 0) continue;
@@ -1973,6 +1952,21 @@ async function handleRangeSummary() {
           userFirstOrderDates[uid] = orderDate;
         }
       }
+    }
+
+    // 指定期間のデータをFirestoreから取得
+    let rangeRecords = await fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate);
+    if (currentProductTypeFilter !== 'all') {
+      rangeRecords = rangeRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
+    }
+
+    // 比較期間のデータを取得（有効な場合）
+    let compFilteredRecords = null;
+    if (enableComparisonCheckbox.checked && compStartDate && compEndDate) {
+      const compRawRecords = await fetchOrdersByPeriod(castId, companyGroupId, compStartDate, compEndDate);
+      compFilteredRecords = currentProductTypeFilter !== 'all'
+        ? compRawRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter)
+        : compRawRecords;
     }
 
     const currentStats = calculatePeriodStats(startDate, endDate, rangeRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
@@ -1997,9 +1991,9 @@ async function handleRangeSummary() {
     updateRangeSummaryModal(currentStats, allTimeUniqueUsers.size, comparisonStats, comparisonLabel, accessInfo, productAccessMap);
   } catch (error) {
     console.error("期間指定レポートエラー:", error);
-    alert("データの取得中にエラーが発生しました: " + error.message);
+    if (rangeResultsEl) rangeResultsEl.innerHTML = `<p class="text-red-500 text-sm p-4">エラー: ${error.message}</p>`;
   } finally {
-    loadingIndicator.classList.add('hidden');
+    if (rangeLoadingEl) rangeLoadingEl.classList.add('hidden');
     rangeSummaryButton.disabled = false;
   }
 }
@@ -2017,8 +2011,22 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
     console.log(`[ARPU計算] 売上: ${stats.totalRevenue.toLocaleString()}円, アクセス: ${accessInfo.totalAccess.toLocaleString()}, ARPU: ${arpu !== null ? arpu.toLocaleString() + '円' : 'N/A'}`);
   }
 
-  // スプシ用コピー文字列の生成
-  const copyText = `${stats.totalRevenue}\t${stats.totalQuantity}\t${stats.avgPurchasePerUser}\t${stats.userCount}\t${stats.uniqueProductCount}\t${stats.avgProductUsers}\t${stats.periodRepeaterRate}\t${stats.periodRepeaters}\t${totalAllTimeUU}\t${stats.allTimeCoverageRate}\t${stats.existingUserRate}\t${stats.existingUserCount}`;
+  // スプシ用コピー文字列の生成 (表示順と一致)
+  // 売上 | 個数 | UU | カバー率 | リピーター率 | リピーター数 | 継続率 | 継続者数 | 商品数 | 商品平均購入者 | 平均購入数
+  const copyText = [
+    stats.totalRevenue,
+    stats.totalQuantity,
+    stats.userCount,
+    stats.allTimeCoverageRate,
+    stats.periodRepeaterRate,
+    stats.periodRepeaters,
+    stats.existingUserRate,
+    stats.existingUserCount,
+    stats.uniqueProductCount,
+    stats.avgProductUsers,
+    stats.avgPurchasePerUser,
+  ].join('\t');
+  window._rangeCopyText = copyText;
 
   // 比較データのHTML生成ヘルパー
   const createDiffHTML = (current, previous, unit = '') => {
@@ -2048,7 +2056,7 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
                         <h3 class="text-lg font-bold text-gray-800">期間サマリー${genreText}</h3>
                         ${comparisonStats ? `<p class="text-xs text-gray-500 font-medium mt-1">比較対象: ${comparisonLabel}</p>` : ''}
                     </div>
-                    <button onclick="window.copyToClipboard('${copyText}')" class="text-xs bg-white hover:bg-gray-100 text-blue-600 font-semibold py-1 px-3 border border-blue-200 rounded shadow-sm transition-colors flex items-center gap-1">
+                    <button onclick="window.copyToClipboard(window._rangeCopyText)" class="text-xs bg-white hover:bg-gray-100 text-blue-600 font-semibold py-1 px-3 border border-blue-200 rounded shadow-sm transition-colors flex items-center gap-1">
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                         スプシ用にコピー
                     </button>
@@ -2155,8 +2163,10 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
              </div>
         `;
 
-  rangeModalBody.innerHTML = modalHTML;
-  showRangeSummaryModal();
+  const rangeResultsEl = document.getElementById('rangeResultsContainer');
+  if (rangeResultsEl) {
+    rangeResultsEl.innerHTML = modalHTML;
+  }
 }
 
 /**
@@ -2325,9 +2335,15 @@ function switchTab(tabName) {
   //   }
   // }
 
-  // KPIタブに切り替えたときにキャストリストを描画
+  // KPIタブに切り替えたときにキャストリストを描画し、選択中キャストを表示
   if (tabName === 'kpi') {
     renderKpiCastList();
+    const castId = castSelector ? castSelector.value : '';
+    if (castId) {
+      const castName = castSelector.options[castSelector.selectedIndex]?.text || '';
+      const groupId = companyGroupSelector ? companyGroupSelector.value : '';
+      renderKpiPanel(castId, castName, groupId);
+    }
   }
 }
 window.switchTab = switchTab;
@@ -2346,16 +2362,111 @@ window.switchToCastDetail = function(castId) {
 // -------------------------------------------------------------------
 // 期間レポートタブのキャスト名ラベルを同期
 // -------------------------------------------------------------------
-function syncPeriodReportCastName() {
-  const el = document.getElementById('periodReportCastName');
-  if (!el) return;
-  if (castSelector && castSelector.value) {
-    const opt = castSelector.options[castSelector.selectedIndex];
-    el.textContent = opt ? opt.textContent : 'キャスト詳細タブでキャストを選択してください';
-  } else {
-    el.textContent = 'キャスト詳細タブでキャストを選択してください';
+// -------------------------------------------------------------------
+// キャストタブバー描画
+// -------------------------------------------------------------------
+function renderCastTabs() {
+  const tabList = document.getElementById('castTabList');
+  const emptyMsg = document.getElementById('castTabEmpty');
+  if (!tabList) return;
+
+  const casts = [];
+  for (const opt of castSelector.options) {
+    if (opt.value) casts.push({ id: opt.value, name: opt.textContent });
+  }
+
+  tabList.innerHTML = '';
+
+  if (casts.length === 0) {
+    if (emptyMsg) emptyMsg.classList.remove('hidden');
+    tabList.classList.add('hidden');
+    return;
+  }
+
+  if (emptyMsg) emptyMsg.classList.add('hidden');
+  tabList.classList.remove('hidden');
+
+  const currentCastId = castSelector.value;
+
+  casts.forEach(cast => {
+    const btn = document.createElement('button');
+    const isActive = cast.id === currentCastId;
+    btn.className = isActive
+      ? 'cast-tab-btn px-4 py-1 rounded-md text-sm font-semibold text-blue-600 bg-blue-50 whitespace-nowrap'
+      : 'cast-tab-btn px-4 py-1 rounded-md text-sm font-medium text-slate-600 hover:bg-slate-100 whitespace-nowrap transition-colors';
+    btn.dataset.castId = cast.id;
+    btn.textContent = cast.name;
+    btn.onclick = () => selectCastGlobally(cast.id, cast.name);
+    tabList.appendChild(btn);
+  });
+}
+
+// -------------------------------------------------------------------
+// グローバルキャスト選択
+// -------------------------------------------------------------------
+function selectCastGlobally(castId, castName) {
+  if (!castId) return;
+
+  // ドロップダウン（非表示）を更新
+  castSelector.value = castId;
+
+  // タブのアクティブ状態を更新
+  document.querySelectorAll('.cast-tab-btn').forEach(btn => {
+    const isActive = btn.dataset.castId === castId;
+    btn.className = isActive
+      ? 'cast-tab-btn px-4 py-1 rounded-md text-sm font-semibold text-blue-600 bg-blue-50 whitespace-nowrap'
+      : 'cast-tab-btn px-4 py-1 rounded-md text-sm font-medium text-slate-600 hover:bg-slate-100 whitespace-nowrap transition-colors';
+  });
+
+  // キャスト名編集欄を更新
+  if (editCastSection) {
+    editCastSection.classList.remove('hidden');
+    editCastNameInput.value = castName;
+    editCastError.textContent = '';
+  }
+
+  // アップロードセクション表示
+  if (uploadSection) uploadSection.classList.remove('hidden');
+
+  // 期間レポートのキャスト名を更新
+  const castNameEl = document.getElementById('periodReportCastName');
+  if (castNameEl) castNameEl.textContent = castName;
+
+  // 期間レポートの結果をリセット
+  const rangeResults = document.getElementById('rangeResultsContainer');
+  if (rangeResults && currentTab === 'period-report') {
+    rangeResults.innerHTML = `
+      <div class="flex items-center justify-center h-64 text-slate-400">
+        <div class="text-center">
+          <svg class="w-14 h-14 mx-auto mb-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <p class="text-sm font-medium">左のサイドバーで期間を選択して</p>
+          <p class="text-xs mt-1 text-slate-400">「この期間で集計」を押してください</p>
+        </div>
+      </div>`;
+  }
+
+  // KPI サイドバーのアクティブ状態を更新
+  const kpiContainer = document.getElementById('kpiCastList');
+  if (kpiContainer) {
+    kpiContainer.querySelectorAll('button').forEach(btn => {
+      const isActive = btn.dataset.castId === castId;
+      btn.classList.toggle('bg-blue-50', isActive);
+      btn.classList.toggle('text-blue-700', isActive);
+      btn.classList.toggle('font-semibold', isActive);
+    });
+  }
+
+  // タブ別アクション
+  if (currentTab === 'cast-detail') {
+    loadCastData(castId);
+  } else if (currentTab === 'kpi') {
+    const groupId = companyGroupSelector ? companyGroupSelector.value : '';
+    renderKpiPanel(castId, castName, groupId);
   }
 }
+window.selectCastGlobally = selectCastGlobally;
 
 // -------------------------------------------------------------------
 // キャッシュリフレッシュ
