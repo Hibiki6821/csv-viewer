@@ -12,3 +12,6 @@ fantia_uploader/
 # Misc
 *.png
 *.jpg
+
+# Local Python scripts in project root (keep local, do not push)
+/*.py

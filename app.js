@@ -2843,6 +2843,7 @@ document.addEventListener('DOMContentLoaded', initializeMainApp);
 // --- モジュールレベル変数 ---
 let currentTab = 'cast-detail';
 let dashboardLoadedForGroupId = null;
+let dashboardChartInstance = null;
 // 新フォーマット確認済みキャストIDのキャッシュ: limit(1)の余分な読み取りを省く
 const newFormatCastIds = new Set();
 // データなしが確定したキャスト（groupId:castId）
@@ -3032,6 +3033,10 @@ window.refreshDashboard = function() {
   ordersRangeCache.clear();
   noDataCastIds.clear();
   accessDataCacheBySite.clear();
+  if (dashboardChartInstance) {
+    dashboardChartInstance.destroy();
+    dashboardChartInstance = null;
+  }
   const groupId = companyGroupSelector ? companyGroupSelector.value : '';
   if (groupId && currentTab === 'dashboard') loadDashboardData(groupId);
 };
@@ -3048,141 +3053,404 @@ async function loadDashboardData(groupId) {
   const alerts = document.getElementById('dashboardAlerts');
 
   if (!groupId || !cards || !alerts) return;
+  if (dashboardChartInstance) {
+    dashboardChartInstance.destroy();
+    dashboardChartInstance = null;
+  }
   alerts.innerHTML = '';
   cards.innerHTML = '';
+
+  const setProgress = (n, msg) => {
+    const p = Math.max(0, Math.min(100, Math.round(n)));
+    if (bar) bar.style.width = `${p}%`;
+    if (pct) pct.textContent = `${p}%`;
+    if (text) text.textContent = msg || '読み込み中...';
+  };
+
+  const escapeHtml = (s) => String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const productBadgeClass = (type) => {
+    const t = String(type || '');
+    if (t.includes('くじ')) return 'bg-amber-100 text-amber-700';
+    if (t.includes('ダウンロード')) return 'bg-sky-100 text-sky-700';
+    return 'bg-slate-100 text-slate-600';
+  };
+
+  const runWithConcurrency = async (items, limitCount, worker) => {
+    const limitN = Math.max(1, limitCount || 1);
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(limitN, items.length) }, async () => {
+      while (idx < items.length) {
+        const current = idx++;
+        // eslint-disable-next-line no-await-in-loop
+        await worker(items[current], current);
+      }
+    });
+    await Promise.all(workers);
+  };
+
   if (loading) loading.classList.remove('hidden');
-  if (bar) bar.style.width = '10%';
-  if (pct) pct.textContent = '10%';
-  if (text) text.textContent = '日次サマリー取得中...';
-
-  const yesterday = toDateStr(new Date(Date.now() - 86400000));
-  const dayBefore = toDateStr(new Date(Date.now() - 2 * 86400000));
-
-  const summaryCol = collection(db, `artifacts/${appId}/public/data/companyGroups/${groupId}/daily_summary`);
-  const yRef = doc(summaryCol, yesterday);
-  const dbRef = doc(summaryCol, dayBefore);
+  setProgress(3, 'ダッシュボードを初期化中...');
 
   try {
-    const [ySnap, dbSnap] = await Promise.all([getDoc(yRef), getDoc(dbRef)]);
-    if (bar) bar.style.width = '50%';
-    if (pct) pct.textContent = '50%';
-    if (text) text.textContent = 'カード生成中...';
-
-    if (!ySnap.exists()) {
-      cards.innerHTML = `
-        <div class="bg-white rounded-xl border border-amber-200 text-amber-800 p-4">
-          daily_summary が見つかりません。<code>build_archives.py</code> を実行してください。
-        </div>
-      `;
+    const casts = [];
+    if (castSelector) {
+      for (const opt of castSelector.options) {
+        if (opt.value) casts.push({ castId: opt.value, castName: opt.textContent || opt.value });
+      }
+    }
+    if (casts.length === 0) {
+      cards.innerHTML = '<div class="bg-white rounded-xl border border-slate-200 text-slate-600 p-4">キャストが見つかりません。</div>';
       return;
     }
 
-    const yCasts = ySnap.data().casts || {};
-    const dbCasts = dbSnap.exists() ? (dbSnap.data().casts || {}) : {};
-    const allCastIds = [...new Set([...Object.keys(yCasts), ...Object.keys(dbCasts)])];
+    const castNameById = new Map(casts.map(c => [c.castId, c.castName]));
+    const castRevenueMap = new Map(casts.map(c => [c.castId, 0]));
+    const castOrdersMap = new Map(casts.map(c => [c.castId, 0]));
+    const castAccessMap = new Map(casts.map(c => [c.castId, 0]));
+    const productMap = new Map(); // castId::productName -> {castName, productName, revenue, quantity, productType}
 
-    // 今月のファンクラブMRRを全キャスト並列取得
-    const nowD = new Date();
-    const currentMonth = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}`;
-    const fanclubMrrByCast = {};
-    await Promise.all(allCastIds.map(async cid => {
+    const dailyRevenueMap = new Map(); // YYYY-MM-DD -> revenue
+    const dailyOrdersMap = new Map(); // YYYY-MM-DD -> order count
+    const dailyAccessMap = new Map(); // YYYY-MM-DD -> access total
+
+    setProgress(8, 'daily_summary を読み込み中...');
+    const summaryColRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${groupId}/daily_summary`);
+    const summarySnap = await getDocs(summaryColRef);
+    summarySnap.forEach(ds => {
+      const data = ds.data() || {};
+      const castsObj = data.casts || {};
+      let revenue = 0;
+      let orders = 0;
+      Object.values(castsObj).forEach(c => {
+        revenue += Number(c?.revenue || 0);
+        orders += Number(c?.orders || 0);
+      });
+      dailyRevenueMap.set(ds.id, revenue);
+      dailyOrdersMap.set(ds.id, orders);
+    });
+
+    setProgress(18, 'アクセスデータを集計中...');
+    let doneAccess = 0;
+    await runWithConcurrency(casts, 4, async (cast) => {
       try {
-        const snap = await getDoc(doc(db, `artifacts/${appId}/public/data/companyGroups/${groupId}/casts/${cid}/fanclub_monthly/${currentMonth}`));
-        if (snap.exists()) fanclubMrrByCast[cid] = snap.data().mrr || 0;
-      } catch { /* fanclub data not available */ }
-    }));
-
-    cards.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3';
-
-    const alertRows = [];
-    for (const castId of allCastIds) {
-      const yData = yCasts[castId] || {};
-      const dData = dbCasts[castId] || {};
-      const castName = yData.castName || dData.castName || castId;
-      const yRev = yData.revenue || 0;
-      const dRev = dData.revenue || 0;
-      const pctValue = dRev > 0 ? ((yRev - dRev) / dRev) * 100 : (yRev > 0 ? 100 : 0);
-      const pctText = `${pctValue >= 0 ? '+' : ''}${pctValue.toFixed(1)}%`;
-
-      let badgeClass = 'bg-slate-100 text-slate-600';
-      if (pctValue >= 30) badgeClass = 'bg-green-100 text-green-700';
-      if (pctValue <= -30) badgeClass = 'bg-red-100 text-red-700';
-
-      if (Math.abs(pctValue) >= 30) {
-        alertRows.push({
-          type: pctValue >= 30 ? 'up' : 'down',
-          text: `${castName}: ${pctText}（昨日 ¥${yRev.toLocaleString()} / 前日 ¥${dRev.toLocaleString()}）`
+        const dailyColRef = collection(db, `artifacts/${appId}/accessdata/${cast.castName}/Daily`);
+        const snap = await getDocs(dailyColRef);
+        snap.forEach(docSnap => {
+          const dateStr = docSnap.id;
+          const total = Number(docSnap.data()?.Total || 0);
+          dailyAccessMap.set(dateStr, (dailyAccessMap.get(dateStr) || 0) + total);
+          castAccessMap.set(cast.castId, (castAccessMap.get(cast.castId) || 0) + total);
         });
+      } catch {
+        // アクセスデータ欠損は0扱い
+      } finally {
+        doneAccess += 1;
+        setProgress(18 + (doneAccess / casts.length) * 24, `アクセスデータ集計中... (${doneAccess}/${casts.length})`);
       }
+    });
 
-      const mrr = fanclubMrrByCast[castId] || 0;
-      const mrrHtml = mrr > 0
-        ? `<div><p class="text-xs text-slate-400">今月MRR</p><p class="text-sm font-semibold text-purple-600">¥${mrr.toLocaleString()}</p></div>`
-        : '';
+    // daily_summary が空の環境向けに orders から日別を補完する
+    const needOrderDailyFallback = dailyRevenueMap.size === 0;
 
-      const card = document.createElement('div');
-      card.className = 'bg-white rounded-xl shadow-sm border border-slate-200 p-4';
-      card.innerHTML = `
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="font-semibold text-slate-800">${castName}</h3>
-          <span class="text-xs font-semibold px-2 py-1 rounded-full ${badgeClass}">${pctText}</span>
-        </div>
-        <div class="flex gap-4 text-sm">
-          <div><p class="text-xs text-slate-400">昨日</p><p class="font-bold text-slate-800">¥${yRev.toLocaleString()}</p></div>
-          <div><p class="text-xs text-slate-400">前日</p><p class="text-slate-500">¥${dRev.toLocaleString()}</p></div>
-          ${mrrHtml}
-        </div>
-      `;
-      cards.appendChild(card);
-    }
+    setProgress(45, '注文データを集計中...');
+    let doneOrders = 0;
+    await runWithConcurrency(casts, 4, async (cast) => {
+      const records = await fetchOrdersByPeriod(cast.castId, groupId, null, null);
+      let castRevenue = 0;
+      let castOrders = 0;
 
-    // 会社全体アクセスの前日比アラート（全キャスト合算）
-    const castNames = new Set();
-    Object.values(yCasts).forEach(v => v.castName && castNames.add(v.castName));
-    Object.values(dbCasts).forEach(v => v.castName && castNames.add(v.castName));
-    if (castNames.size > 0) {
-      const accessPairs = await Promise.all([...castNames].map(async (name) => {
-        try {
-          const dailyColRef = collection(db, `artifacts/${appId}/accessdata/${name}/Daily`);
-          const [yAccSnap, dbAccSnap] = await Promise.all([
-            getDoc(doc(dailyColRef, yesterday)),
-            getDoc(doc(dailyColRef, dayBefore)),
-          ]);
-          const yTotal = yAccSnap.exists() ? (yAccSnap.data().Total || 0) : 0;
-          const dTotal = dbAccSnap.exists() ? (dbAccSnap.data().Total || 0) : 0;
-          return { yTotal, dTotal };
-        } catch {
-          return { yTotal: 0, dTotal: 0 };
+      records.forEach(r => {
+        if (r.status !== '取引完了') return;
+        const revenue = Number(r.price || 0);
+        const quantity = Number(r.quantity || 0);
+        const productName = r.productName || '(商品名なし)';
+        const productType = r.productType || '未分類';
+        const dateStr = String(r.orderDate || '').replace(/\//g, '-').slice(0, 10);
+
+        castRevenue += revenue;
+        castOrders += 1;
+
+        if (needOrderDailyFallback && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+          dailyRevenueMap.set(dateStr, (dailyRevenueMap.get(dateStr) || 0) + revenue);
+          dailyOrdersMap.set(dateStr, (dailyOrdersMap.get(dateStr) || 0) + 1);
         }
-      }));
 
-      const totalYAccess = accessPairs.reduce((s, a) => s + a.yTotal, 0);
-      const totalDBAccess = accessPairs.reduce((s, a) => s + a.dTotal, 0);
-      if (totalDBAccess > 0) {
-        const accessPct = ((totalYAccess - totalDBAccess) / totalDBAccess) * 100;
-        if (Math.abs(accessPct) >= 30) {
-          alertRows.push({
-            type: accessPct >= 0 ? 'up' : 'down',
-            text: `アクセス合計: ${accessPct >= 0 ? '+' : ''}${accessPct.toFixed(1)}%（昨日 ${totalYAccess.toLocaleString()} / 前日 ${totalDBAccess.toLocaleString()}）`
+        const productKey = `${cast.castId}::${productName}`;
+        if (!productMap.has(productKey)) {
+          productMap.set(productKey, {
+            castId: cast.castId,
+            castName: cast.castName,
+            productName,
+            revenue: 0,
+            quantity: 0,
+            productType,
           });
         }
-      }
-    }
+        const p = productMap.get(productKey);
+        p.revenue += revenue;
+        p.quantity += quantity;
+      });
 
-    alerts.innerHTML = alertRows.map(row => `
-      <div class="rounded-lg px-4 py-2 border text-sm font-medium ${row.type === 'up'
-        ? 'bg-blue-50 border-blue-200 text-blue-700'
-        : 'bg-red-50 border-red-200 text-red-700'}">
-        ${row.text}
-      </div>
-    `).join('');
+      castRevenueMap.set(cast.castId, castRevenue);
+      castOrdersMap.set(cast.castId, castOrders);
+      doneOrders += 1;
+      setProgress(45 + (doneOrders / casts.length) * 40, `注文データ集計中... (${doneOrders}/${casts.length})`);
+    });
+
+    const totalRevenue = [...castRevenueMap.values()].reduce((s, v) => s + v, 0);
+    const totalOrders = [...castOrdersMap.values()].reduce((s, v) => s + v, 0);
+    const totalAccess = [...castAccessMap.values()].reduce((s, v) => s + v, 0);
+
+    setProgress(88, 'ダッシュボードを描画中...');
+    cards.className = 'space-y-6';
+    cards.innerHTML = `
+      <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <p class="text-xs font-medium text-slate-500 mb-1">全体売上合計</p>
+          <p class="text-2xl font-bold text-slate-800">¥${totalRevenue.toLocaleString()}</p>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <p class="text-xs font-medium text-slate-500 mb-1">全体注文数</p>
+          <p class="text-2xl font-bold text-slate-800">${totalOrders.toLocaleString()}件</p>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+          <p class="text-xs font-medium text-slate-500 mb-1">全体アクセス数合計</p>
+          <p class="text-2xl font-bold text-slate-800">${totalAccess.toLocaleString()}</p>
+        </div>
+      </section>
+
+      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <h3 class="text-sm sm:text-base font-bold text-slate-800">日別推移（全キャスト合算）</h3>
+          <div id="dashboardPeriodButtons" class="flex items-center gap-2">
+            <button data-period="30d" class="dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white">直近30日</button>
+            <button data-period="90d" class="dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">直近90日</button>
+            <button data-period="all" class="dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">全期間</button>
+          </div>
+        </div>
+        <div class="relative h-80">
+          <canvas id="dashboardTrendChart"></canvas>
+        </div>
+      </section>
+
+      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex flex-wrap gap-2 mb-4" id="dashboardRankingTabs">
+          <button data-rank-tab="cast-revenue" class="dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white">キャスト別売上</button>
+          <button data-rank-tab="cast-access" class="dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">キャスト別アクセス</button>
+          <button data-rank-tab="product-revenue" class="dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">商品別 売上金額</button>
+          <button data-rank-tab="product-quantity" class="dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">商品別 販売個数</button>
+        </div>
+        <div id="dashboardRankingContent"></div>
+      </section>
+    `;
+
+    const allDates = [...new Set([...dailyRevenueMap.keys(), ...dailyAccessMap.keys()])].sort();
+    const renderDashboardChart = (period) => {
+      const now = new Date();
+      let startStr = null;
+      if (period === '30d') {
+        startStr = toDateStr(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
+      } else if (period === '90d') {
+        startStr = toDateStr(new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000));
+      }
+
+      const filteredDates = startStr ? allDates.filter(d => d >= startStr) : allDates.slice();
+      const labels = filteredDates.map(d => d.slice(5));
+      const revenueData = filteredDates.map(d => dailyRevenueMap.get(d) || 0);
+      const accessData = filteredDates.map(d => dailyAccessMap.get(d) || 0);
+
+      const canvas = document.getElementById('dashboardTrendChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      if (dashboardChartInstance) dashboardChartInstance.destroy();
+      dashboardChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: '売上',
+              data: revenueData,
+              borderColor: 'rgb(59, 130, 246)',
+              backgroundColor: 'rgba(59, 130, 246, 0.15)',
+              borderWidth: 2,
+              pointRadius: 2,
+              tension: 0.2,
+              yAxisID: 'y',
+            },
+            {
+              label: 'アクセス',
+              data: accessData,
+              borderColor: 'rgb(16, 185, 129)',
+              backgroundColor: 'rgba(16, 185, 129, 0.15)',
+              borderWidth: 2,
+              pointRadius: 2,
+              tension: 0.2,
+              yAxisID: 'y1',
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            y: {
+              type: 'linear',
+              position: 'left',
+              ticks: {
+                callback: (value) => `¥${Number(value).toLocaleString()}`,
+              },
+            },
+            y1: {
+              type: 'linear',
+              position: 'right',
+              grid: { drawOnChartArea: false },
+            },
+          },
+        },
+      });
+    };
+
+    const castRevenueRanking = casts
+      .map(c => ({
+        castId: c.castId,
+        castName: c.castName,
+        revenue: castRevenueMap.get(c.castId) || 0,
+      }))
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const castAccessRanking = casts
+      .map(c => ({
+        castId: c.castId,
+        castName: c.castName,
+        access: castAccessMap.get(c.castId) || 0,
+      }))
+      .sort((a, b) => b.access - a.access);
+
+    const products = [...productMap.values()];
+    const productRevenueRanking = products.slice().sort((a, b) => b.revenue - a.revenue);
+    const productQuantityRanking = products.slice().sort((a, b) => b.quantity - a.quantity);
+
+    const rankingContent = document.getElementById('dashboardRankingContent');
+    const renderRankingTab = (tabName) => {
+      if (!rankingContent) return;
+      if (tabName === 'cast-revenue') {
+        rankingContent.innerHTML = `
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-slate-200 text-slate-500">
+                  <th class="text-left py-2 px-2">順位</th>
+                  <th class="text-left py-2 px-2">キャスト</th>
+                  <th class="text-right py-2 px-2">売上</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${castRevenueRanking.map((r, i) => `
+                  <tr class="border-b border-slate-100">
+                    <td class="py-2 px-2">${i + 1}</td>
+                    <td class="py-2 px-2">${escapeHtml(r.castName)}</td>
+                    <td class="py-2 px-2 text-right font-semibold">¥${r.revenue.toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+        return;
+      }
+
+      if (tabName === 'cast-access') {
+        rankingContent.innerHTML = `
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-slate-200 text-slate-500">
+                  <th class="text-left py-2 px-2">順位</th>
+                  <th class="text-left py-2 px-2">キャスト</th>
+                  <th class="text-right py-2 px-2">アクセス</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${castAccessRanking.map((r, i) => `
+                  <tr class="border-b border-slate-100">
+                    <td class="py-2 px-2">${i + 1}</td>
+                    <td class="py-2 px-2">${escapeHtml(r.castName)}</td>
+                    <td class="py-2 px-2 text-right font-semibold">${r.access.toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+        return;
+      }
+
+      const rows = (tabName === 'product-quantity' ? productQuantityRanking : productRevenueRanking).map((r, i) => `
+        <tr class="border-b border-slate-100">
+          <td class="py-2 px-2">${i + 1}</td>
+          <td class="py-2 px-2">
+            <div class="font-medium text-slate-800">${escapeHtml(r.productName)}</div>
+            <span class="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded ${productBadgeClass(r.productType)}">${escapeHtml(r.productType || '未分類')}</span>
+          </td>
+          <td class="py-2 px-2">${escapeHtml(castNameById.get(r.castId) || r.castName)}</td>
+          <td class="py-2 px-2 text-right font-semibold">¥${r.revenue.toLocaleString()}</td>
+          <td class="py-2 px-2 text-right">${r.quantity.toLocaleString()}</td>
+        </tr>
+      `).join('');
+
+      rankingContent.innerHTML = `
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-slate-200 text-slate-500">
+                <th class="text-left py-2 px-2">順位</th>
+                <th class="text-left py-2 px-2">商品名</th>
+                <th class="text-left py-2 px-2">キャスト</th>
+                <th class="text-right py-2 px-2">売上</th>
+                <th class="text-right py-2 px-2">販売個数</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    };
+
+    const periodButtons = cards.querySelectorAll('.dashboard-period-btn');
+    periodButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        periodButtons.forEach(b => b.className = 'dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700');
+        btn.className = 'dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white';
+        renderDashboardChart(btn.dataset.period || '30d');
+      });
+    });
+
+    const rankingButtons = cards.querySelectorAll('.dashboard-rank-tab');
+    rankingButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        rankingButtons.forEach(b => b.className = 'dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700');
+        btn.className = 'dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white';
+        renderRankingTab(btn.dataset.rankTab || 'cast-revenue');
+      });
+    });
+
+    renderDashboardChart('30d');
+    renderRankingTab('cast-revenue');
 
     dashboardLoadedForGroupId = groupId;
-    if (bar) bar.style.width = '100%';
-    if (pct) pct.textContent = '100%';
-    if (text) text.textContent = '完了';
+    setProgress(100, '完了');
   } catch (e) {
-    cards.innerHTML = `<div class="bg-white rounded-xl border border-red-200 text-red-700 p-4">ダッシュボードの読み込みに失敗しました: ${e.message}</div>`;
+    cards.innerHTML = `<div class="bg-white rounded-xl border border-red-200 text-red-700 p-4">ダッシュボードの読み込みに失敗しました: ${escapeHtml(e.message || e)}</div>`;
   } finally {
     if (loading) loading.classList.add('hidden');
   }
