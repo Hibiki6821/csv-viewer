@@ -3195,6 +3195,24 @@ async function loadKpiData(castId, companyGroupId) {
 }
 
 // -------------------------------------------------------------------
+// ファンクラブ月次: データ読み込み
+// -------------------------------------------------------------------
+async function loadFanclubMonthly(castId, companyGroupId) {
+  if (!castId || !companyGroupId || !db || !appId) return {};
+  const result = {};
+  try {
+    const colRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/fanclub_monthly`);
+    const snap = await getDocs(colRef);
+    snap.forEach(docSnap => {
+      result[docSnap.id] = docSnap.data();
+    });
+  } catch (e) {
+    console.warn('fanclub_monthlyデータ取得エラー:', e.message);
+  }
+  return result;
+}
+
+// -------------------------------------------------------------------
 // KPI: パネル描画
 // -------------------------------------------------------------------
 async function renderKpiPanel(castId, castName, companyGroupId) {
@@ -3221,9 +3239,10 @@ async function renderKpiPanel(castId, castName, companyGroupId) {
     months.push(`${y}-${m}`);
   }
 
-  // 実績データと KPI ターゲットを並列取得
-  const [kpiTargets] = await Promise.all([
+  // 実績データ・KPIターゲット・ファンクラブ月次を並列取得
+  const [kpiTargets, fanclubMonthly] = await Promise.all([
     loadKpiData(castId, companyGroupId),
+    loadFanclubMonthly(castId, companyGroupId),
   ]);
 
   // 月別実績を取得
@@ -3286,6 +3305,40 @@ async function renderKpiPanel(castId, castName, companyGroupId) {
     `;
   }).join('');
 
+  // ファンクラブ月次テーブル行を生成
+  const fanclubMonths = Object.keys(fanclubMonthly).sort().reverse();
+  const fanclubRows = fanclubMonths.length === 0
+    ? `<tr><td colspan="5" class="px-4 py-6 text-center text-sm text-slate-400">データなし</td></tr>`
+    : fanclubMonths.map(ym => {
+        const d = fanclubMonthly[ym];
+        const [year, month] = ym.split('-').map(Number);
+        const label = `${year}年${month}月`;
+        const total = d.totalSubscribers || 0;
+        const mrr = d.mrr || 0;
+        const closed = d.closed || false;
+        const isCurrentMonth = ym === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+        const plansList = Object.values(d.plans || {})
+          .filter(p => p.count > 0)
+          .sort((a, b) => b.count - a.count)
+          .map(p => `<span class="inline-block bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-full mr-1 mb-1">${p.name} <span class="font-semibold">${p.count}</span>人</span>`)
+          .join('');
+
+        const statusBadge = closed
+          ? `<span class="inline-block bg-slate-200 text-slate-500 text-xs px-2 py-0.5 rounded-full">締切済</span>`
+          : `<span class="inline-block bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full">集計中</span>`;
+
+        return `
+          <tr class="border-b border-slate-100 ${isCurrentMonth ? 'bg-blue-50' : 'hover:bg-slate-50'}">
+            <td class="px-4 py-3 text-sm font-medium text-slate-700 whitespace-nowrap">${label}${isCurrentMonth ? ' <span class="text-xs text-blue-500 font-semibold">今月</span>' : ''}</td>
+            <td class="px-4 py-3 text-sm text-right font-semibold text-slate-800">${total.toLocaleString()}人</td>
+            <td class="px-4 py-3 text-sm text-right font-semibold text-slate-800">¥${mrr.toLocaleString()}</td>
+            <td class="px-4 py-3 text-sm">${plansList || '<span class="text-slate-400 text-xs">-</span>'}</td>
+            <td class="px-4 py-3 text-sm">${statusBadge}</td>
+          </tr>
+        `;
+      }).join('');
+
   contentEl.innerHTML = `
     <div class="mb-6">
       <h2 class="text-xl font-bold text-slate-800">${castName}</h2>
@@ -3307,6 +3360,27 @@ async function renderKpiPanel(castId, castName, companyGroupId) {
       </div>
     </div>
     <p class="text-xs text-slate-400 mt-3">目標欄を変更すると自動保存されます。</p>
+
+    <div class="mt-8 mb-4">
+      <h3 class="text-lg font-bold text-slate-800">ファンクラブ月次</h3>
+      <p class="text-sm text-slate-500 mt-1">プランCSVから取得したファンクラブ会員スナップショット</p>
+    </div>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full">
+          <thead class="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">月</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">会員数</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">MRR</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">プラン内訳</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">状態</th>
+            </tr>
+          </thead>
+          <tbody>${fanclubRows}</tbody>
+        </table>
+      </div>
+    </div>
   `;
 }
 
