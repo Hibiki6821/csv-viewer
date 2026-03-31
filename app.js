@@ -43,6 +43,9 @@ let globalReferrerPathBreakdownMap = new Map(); // Map<'YYYY-MM-DD', {channel: {
 let salesChartInstance = null;
 let genreChartInstance = null;
 
+// ファンクラブ月次データ（現在選択中のキャスト）
+let globalFanclubMonthly = {};
+
 // --- DOM要素 (認証画面) ---
 const passwordContainer = document.getElementById('password-container');
 const mainContent = document.getElementById('main-content');
@@ -1264,7 +1267,11 @@ async function loadCastData(castId) {
 
     // キャスト名を取得してアクセスデータをロード
     const castName = castSelector.options[castSelector.selectedIndex]?.text || '';
-    await loadAccessDataForCast(castName);
+    const [, fanclubData] = await Promise.all([
+      loadAccessDataForCast(castName),
+      loadFanclubMonthly(castId, companyGroupId),
+    ]);
+    globalFanclubMonthly = fanclubData;
     setLoadingProgress(100, 'データを分析中...');
 
     if (globalAllRecords.length === 0) {
@@ -1337,6 +1344,15 @@ function renderProductTypeTabs() {
     tab.onclick = () => handleProductTypeChange(type);
     productTypeTabs.appendChild(tab);
   });
+
+  // プラン状況タブ
+  const planTab = document.createElement('button');
+  planTab.textContent = 'プラン状況';
+  planTab.dataset.type = 'plan';
+  planTab.className = 'px-4 py-2 rounded-lg font-medium text-sm transition-colors ' +
+    (currentProductTypeFilter === 'plan' ? 'bg-purple-600 text-white shadow-md' : 'bg-white text-purple-700 hover:bg-purple-50 border border-purple-300');
+  planTab.onclick = () => handleProductTypeChange('plan');
+  productTypeTabs.appendChild(planTab);
 }
 
 /**
@@ -1355,13 +1371,89 @@ function handleProductTypeChange(type) {
     }
   });
 
-  // データをフィルタリングして再表示
-  updateViewFromGlobalData();
+  if (type === 'plan') {
+    renderPlanStatusView();
+  } else {
+    updateViewFromGlobalData();
+  }
 }
 
 /**
  * グローバルデータから、現在のフィルタ設定（期間・商品タイプ）に基づいて表示を更新します。
  */
+function computeFanclubMrrForPeriod(startDate, endDate) {
+  let total = 0;
+  for (const [ym, data] of Object.entries(globalFanclubMonthly)) {
+    const [y, m] = ym.split('-').map(Number);
+    const monthStart = new Date(y, m - 1, 1);
+    const monthEnd = new Date(y, m, 0, 23, 59, 59, 999);
+    if (monthStart <= endDate && monthEnd >= startDate) {
+      total += (data.mrr || 0);
+    }
+  }
+  return total;
+}
+
+function renderPlanStatusView() {
+  const now = new Date();
+  const fanclubMonths = Object.keys(globalFanclubMonthly).sort().reverse();
+
+  const rows = fanclubMonths.length === 0
+    ? `<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-slate-400">ファンクラブデータがありません。plan_uploader.py を実行してください。</td></tr>`
+    : fanclubMonths.map(ym => {
+        const d = globalFanclubMonthly[ym];
+        const [year, month] = ym.split('-').map(Number);
+        const label = `${year}年${month}月`;
+        const total = d.totalSubscribers || 0;
+        const mrr = d.mrr || 0;
+        const closed = d.closed || false;
+        const isCurrentMonth = ym === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+        const plansList = Object.values(d.plans || {})
+          .filter(p => p.count > 0)
+          .sort((a, b) => b.count - a.count)
+          .map(p => `<div class="text-xs text-slate-700">${p.name}: <span class="font-semibold">${p.count}人</span>${p.price > 0 ? ` <span class="text-slate-400">¥${p.price.toLocaleString()}/月</span>` : ''}</div>`)
+          .join('');
+
+        const statusBadge = closed
+          ? `<span class="inline-block bg-slate-200 text-slate-500 text-xs px-2 py-0.5 rounded-full">締切済</span>`
+          : `<span class="inline-block bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full">集計中</span>`;
+
+        return `
+          <tr class="border-b border-slate-100 ${isCurrentMonth ? 'bg-purple-50' : 'hover:bg-slate-50'}">
+            <td class="px-4 py-3 text-sm font-medium text-slate-700 whitespace-nowrap">${label}${isCurrentMonth ? ' <span class="text-xs text-purple-500 font-semibold">今月</span>' : ''}</td>
+            <td class="px-4 py-3 text-sm text-right font-semibold text-slate-800">${total.toLocaleString()}人</td>
+            <td class="px-4 py-3 text-sm text-right font-semibold text-slate-800">¥${mrr.toLocaleString()}</td>
+            <td class="px-4 py-3 text-sm">${plansList || '<span class="text-slate-400 text-xs">-</span>'}</td>
+            <td class="px-4 py-3 text-sm">${statusBadge}</td>
+          </tr>
+        `;
+      }).join('');
+
+  resultsContainer.innerHTML = `
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      <div class="px-4 py-3 bg-purple-50 border-b border-slate-200">
+        <h3 class="font-semibold text-purple-900">ファンクラブ プラン状況</h3>
+        <p class="text-xs text-slate-500 mt-0.5">plan_uploader.py から取得した月次スナップショット</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full">
+          <thead class="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">月</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">会員数</th>
+              <th class="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">MRR</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">プラン内訳</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">状態</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function updateViewFromGlobalData() {
   if (!globalAllRecords || globalAllRecords.length === 0) return;
 
@@ -1376,13 +1468,13 @@ function updateViewFromGlobalData() {
 
   // 2. 期間フィルタリング (currentSummaryPeriodを使用)
   // 分析実行
-  const { dailyStats, productStats, totalRevenue, totalQuantity } = analyzeFilteredData(filteredRecords, currentSummaryPeriod);
+  const { dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr } = analyzeFilteredData(filteredRecords, currentSummaryPeriod);
 
   // グローバルな日別統計を更新 (モーダル表示などで使用)
   globalDailyStats = dailyStats;
 
   // 結果表示
-  displayResults(dailyStats, productStats, totalRevenue, totalQuantity);
+  displayResults(dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr);
 }
 
 
@@ -1453,13 +1545,18 @@ function analyzeFilteredData(records, period) {
     }
   }
 
-  return { dailyStats, productStats, totalRevenue, totalQuantity };
+  // ファンクラブMRR（全て表示時のみ集計）
+  const fanclubMrr = currentProductTypeFilter === 'all'
+    ? computeFanclubMrrForPeriod(startDate, now)
+    : 0;
+
+  return { dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr };
 }
 
 /**
  * 分析結果をHTMLとして画面に表示します。
  */
-function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
+function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr = 0) {
   // ジャンル表示用のラベル作成
   let genreLabel = currentProductTypeFilter === 'all' ? '' : `（${currentProductTypeFilter}）`;
 
@@ -1516,7 +1613,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity) {
 
   resultsContainer.innerHTML = `
             ${yesterdayBannerHtml}
-            ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel)}
+            ${createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel, fanclubMrr)}
 
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 mb-4">
                 <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
@@ -1943,17 +2040,27 @@ function createTrafficSourceTable(startDate, endDate) {
 /**
  * 全体サマリーカードのHTMLを生成します。
  */
-function createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel) {
+function createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel, fanclubMrr = 0) {
   const uniqueProductCount = Object.keys(productStats).length;
   const periodLabel = currentSummaryPeriod === 'all' ? '全体' :
     currentSummaryPeriod === 'monthly' ? '月間' : '週間';
+
+  const fanclubRow = fanclubMrr > 0 ? `
+    <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap justify-center gap-x-6 gap-y-1 text-sm text-center">
+      <span class="text-gray-500">注文売上 <span class="font-semibold text-gray-700">¥${totalRevenue.toLocaleString()}</span></span>
+      <span class="text-gray-400">＋</span>
+      <span class="text-gray-500">ファンクラブMRR <span class="font-semibold text-purple-600">¥${fanclubMrr.toLocaleString()}</span></span>
+      <span class="text-gray-400">=</span>
+      <span class="text-gray-500">合計 <span class="font-bold text-blue-700">¥${(totalRevenue + fanclubMrr).toLocaleString()}</span></span>
+    </div>
+  ` : '';
 
   return `
         <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
             <h2 class="text-xl font-bold text-gray-800 mb-4">${periodLabel}サマリー ${genreLabel} <span class="text-sm font-normal text-gray-500 ml-2">※取引完了のみ</span></h2>
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
                 <div>
-                    <p class="text-sm text-gray-500">総売上金額</p>
+                    <p class="text-sm text-gray-500">総売上金額${fanclubMrr > 0 ? '（注文）' : ''}</p>
                     <p class="text-2xl font-semibold text-blue-600">${totalRevenue.toLocaleString()}円</p>
                 </div>
                 <div>
@@ -1965,6 +2072,7 @@ function createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel
                     <p class="text-2xl font-semibold text-blue-600">${uniqueProductCount}種類</p>
                 </div>
             </div>
+            ${fanclubRow}
         </div>
         `;
 }
@@ -2336,10 +2444,16 @@ async function handleRangeSummary() {
     }
 
     const currentStats = calculatePeriodStats(startDate, endDate, rangeRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
+    if (currentProductTypeFilter === 'all') {
+      currentStats.fanclubMrr = computeFanclubMrrForPeriod(startDate, endDate);
+    }
 
     let comparisonStats = null;
     if (compFilteredRecords) {
       comparisonStats = calculatePeriodStats(compStartDate, compEndDate, compFilteredRecords, allTimeUniqueUsers, userFirstOrderDates, excludeFree, exclude100Yen);
+      if (currentProductTypeFilter === 'all' && compStartDate && compEndDate) {
+        comparisonStats.fanclubMrr = computeFanclubMrrForPeriod(compStartDate, compEndDate);
+      }
     }
 
     // JSONアクセスデータから期間内の合計アクセス数を集計
@@ -2429,8 +2543,9 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
                  </div>
                  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
                      <div class="bg-white p-2 rounded shadow-sm">
-                         <p class="text-xs text-gray-500">期間売上金額</p>
+                         <p class="text-xs text-gray-500">期間売上金額${stats.fanclubMrr > 0 ? '（注文）' : ''}</p>
                          <p class="text-xl font-semibold text-blue-600">${stats.totalRevenue.toLocaleString()}円</p>
+                         ${stats.fanclubMrr > 0 ? `<p class="text-xs text-purple-600 mt-0.5">+MRR ¥${stats.fanclubMrr.toLocaleString()} = <span class="font-bold">¥${(stats.totalRevenue + stats.fanclubMrr).toLocaleString()}</span></p>` : ''}
                          ${createDiffHTML(stats.totalRevenue, comparisonStats?.totalRevenue, '円')}
                      </div>
                      <div class="bg-white p-2 rounded shadow-sm">
@@ -2966,6 +3081,17 @@ async function loadDashboardData(groupId) {
     const dbCasts = dbSnap.exists() ? (dbSnap.data().casts || {}) : {};
     const allCastIds = [...new Set([...Object.keys(yCasts), ...Object.keys(dbCasts)])];
 
+    // 今月のファンクラブMRRを全キャスト並列取得
+    const nowD = new Date();
+    const currentMonth = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}`;
+    const fanclubMrrByCast = {};
+    await Promise.all(allCastIds.map(async cid => {
+      try {
+        const snap = await getDoc(doc(db, `artifacts/${appId}/public/data/companyGroups/${groupId}/casts/${cid}/fanclub_monthly/${currentMonth}`));
+        if (snap.exists()) fanclubMrrByCast[cid] = snap.data().mrr || 0;
+      } catch { /* fanclub data not available */ }
+    }));
+
     cards.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3';
 
     const alertRows = [];
@@ -2989,6 +3115,11 @@ async function loadDashboardData(groupId) {
         });
       }
 
+      const mrr = fanclubMrrByCast[castId] || 0;
+      const mrrHtml = mrr > 0
+        ? `<div><p class="text-xs text-slate-400">今月MRR</p><p class="text-sm font-semibold text-purple-600">¥${mrr.toLocaleString()}</p></div>`
+        : '';
+
       const card = document.createElement('div');
       card.className = 'bg-white rounded-xl shadow-sm border border-slate-200 p-4';
       card.innerHTML = `
@@ -2999,6 +3130,7 @@ async function loadDashboardData(groupId) {
         <div class="flex gap-4 text-sm">
           <div><p class="text-xs text-slate-400">昨日</p><p class="font-bold text-slate-800">¥${yRev.toLocaleString()}</p></div>
           <div><p class="text-xs text-slate-400">前日</p><p class="text-slate-500">¥${dRev.toLocaleString()}</p></div>
+          ${mrrHtml}
         </div>
       `;
       cards.appendChild(card);
