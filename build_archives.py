@@ -162,7 +162,9 @@ def build_daily_summary():
 
     daily_data = defaultdict(lambda: {'casts': {}})
 
-    for cast in casts:
+    # daily_summary は常に全キャスト対象（CLI でキャストを絞っても全員分を再構築する）
+    all_casts = config['casts']
+    for cast in all_casts:
         cast_name = cast['cast_name']
         cast_id = hashlib.sha1(cast_name.encode()).hexdigest()
         orders_ref = (

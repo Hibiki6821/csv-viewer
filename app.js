@@ -2941,7 +2941,7 @@ async function loadDashboardData(groupId) {
     if (pct) pct.textContent = '50%';
     if (text) text.textContent = 'カード生成中...';
 
-    if (!ySnap.exists() || !dbSnap.exists()) {
+    if (!ySnap.exists()) {
       cards.innerHTML = `
         <div class="bg-white rounded-xl border border-amber-200 text-amber-800 p-4">
           daily_summary が見つかりません。<code>build_archives.py</code> を実行してください。
@@ -2951,7 +2951,7 @@ async function loadDashboardData(groupId) {
     }
 
     const yCasts = ySnap.data().casts || {};
-    const dbCasts = dbSnap.data().casts || {};
+    const dbCasts = dbSnap.exists() ? (dbSnap.data().casts || {}) : {};
     const allCastIds = [...new Set([...Object.keys(yCasts), ...Object.keys(dbCasts)])];
 
     cards.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3';
