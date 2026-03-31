@@ -1876,11 +1876,21 @@ window.toggleFreeProductsInAnalysis = (checked) => {
 function createTrafficSourceTable(startDate, endDate) {
   const sourceTotals = {};
   const channelTotals = {};
+
+  // チャンネル合計は globalChannelDataMap（グラフと同じ実数値ソース）から集計
+  for (const [dateStr, channelEntry] of globalChannelDataMap) {
+    const d = new Date(dateStr);
+    if (d < startDate || d > endDate) continue;
+    for (const [channel, count] of Object.entries(channelEntry || {})) {
+      channelTotals[channel] = (channelTotals[channel] || 0) + (count || 0);
+    }
+  }
+
+  // source/medium 内訳は globalSourceBreakdownMap から集計（trimあり・参考値）
   for (const [dateStr, byChannel] of globalSourceBreakdownMap) {
     const d = new Date(dateStr);
     if (d < startDate || d > endDate) continue;
-    for (const [channel, srcMap] of Object.entries(byChannel || {})) {
-      channelTotals[channel] = (channelTotals[channel] || 0) + Object.values(srcMap).reduce((s, v) => s + (v || 0), 0);
+    for (const [, srcMap] of Object.entries(byChannel || {})) {
       for (const [src, count] of Object.entries(srcMap || {})) {
         sourceTotals[src] = (sourceTotals[src] || 0) + (count || 0);
       }
@@ -2616,7 +2626,9 @@ function renderSourceBreakdownTable(sourceMap = {}) {
 window.showChannelBreakdownModal = (date, channel) => {
   const byChannelPath = globalReferrerPathBreakdownMap.get(date) || {};
   const byChannelSource = globalSourceBreakdownMap.get(date) || {};
-  const sourceMap = byChannelPath[channel] || byChannelSource[channel] || {};
+  const pathMap = byChannelPath[channel] || {};
+  // {} は truthy のため Object.keys チェックで空判定してフォールバック
+  const sourceMap = Object.keys(pathMap).length > 0 ? pathMap : (byChannelSource[channel] || {});
   openDetailsModal(`${date} / ${channel} の流入元内訳`, renderSourceBreakdownTable(sourceMap));
 };
 
