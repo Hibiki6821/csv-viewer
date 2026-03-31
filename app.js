@@ -801,10 +801,10 @@ async function saveDataToFirestore(castId, records, header) {
       status: record[indices.status],
       orderDate: normalizedDate,
       productName: record[indices.productName],
-      quantity: parseInt(record[indices.quantity], 10) || 0,
+      quantity: parseCsvInt(record[indices.quantity]),
       userId: record[indices.userId],
-      price: parseInt(record[indices.price], 10) || 0,
-      productType: productType
+      price: parseCsvInt(record[indices.price]),
+      productType: normalizeProductType(productType)
     };
 
     const docRef = doc(collectionRef, `${datePrefix}_${orderId}`);
@@ -844,6 +844,34 @@ function toDateStr(date) {
 
 function toMonthStr(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function parseCsvInt(value) {
+  const n = parseInt(String(value || '').replace(/,/g, '').trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeProductType(value) {
+  const t = String(value || '').trim();
+  return t || '未分類';
+}
+
+function getPeriodStartDate(period) {
+  const now = new Date();
+  const start = new Date(now);
+  switch (period) {
+    case 'monthly':
+      start.setDate(start.getDate() - 30);
+      break;
+    case 'weekly':
+      start.setDate(start.getDate() - 7);
+      break;
+    case 'all':
+    default:
+      return new Date('2000-01-01T00:00:00');
+  }
+  start.setHours(0, 0, 0, 0);
+  return start;
 }
 
 const ARCHIVE_CHUNK_SIZE = 800;
@@ -1342,12 +1370,7 @@ async function loadCastData(castId) {
 function extractAvailableProductTypes(records) {
   availableProductTypes = new Set();
   records.forEach(record => {
-    if (record.productType) {
-      availableProductTypes.add(record.productType);
-    } else {
-      // 古いデータなどでフィールドがない場合
-      availableProductTypes.add('未分類');
-    }
+    availableProductTypes.add(normalizeProductType(record.productType));
   });
 }
 
@@ -1495,7 +1518,7 @@ function updateViewFromGlobalData() {
   let filteredRecords = globalAllRecords;
   if (currentProductTypeFilter !== 'all') {
     filteredRecords = globalAllRecords.filter(r => {
-      const type = r.productType || '未分類';
+      const type = normalizeProductType(r.productType);
       return type === currentProductTypeFilter;
     });
   }
@@ -1522,29 +1545,15 @@ function analyzeFilteredData(records, period) {
   let totalQuantity = 0;
 
   const now = new Date();
-  let startDate;
-
-  // 期間フィルタの開始日設定
-  switch (period) {
-    case 'monthly':
-      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      break;
-    case 'weekly':
-      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      break;
-    case 'all':
-    default:
-      startDate = new Date('2000-01-01'); // 全期間
-      break;
-  }
+  const startDate = getPeriodStartDate(period);
+  const startStr = toDateStr(startDate);
 
   for (const record of records) {
     if (record.status === '取引完了') {
       const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
-      const orderDate = new Date(orderDateStr);
 
       // 期間チェック
-      if (orderDate >= startDate) {
+      if (orderDateStr >= startStr) {
         const productName = record.productName;
         const quantity = record.quantity || 0;
         const userId = record.userId;
@@ -1596,12 +1605,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, f
 
   // 現在の期間に対応する商品別アクセスマップを構築
   const now = new Date();
-  let periodStart;
-  switch (currentSummaryPeriod) {
-    case 'monthly': periodStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-    case 'weekly':  periodStart = new Date(now.getTime() -  7 * 24 * 60 * 60 * 1000); break;
-    default:        periodStart = new Date('2000-01-01'); break;
-  }
+  const periodStart = getPeriodStartDate(currentSummaryPeriod);
   const productAccessMap = buildProductAccessMap(periodStart, now);
 
   const yesterday = toDateStr(new Date(Date.now() - 86400000));
@@ -1830,20 +1834,15 @@ function renderCharts(dailyStats) {
     }
 
     // 期間フィルタの適用（商品タイプフィルタは無視して、ジャンル比率を出したい）
-    const now = new Date();
-    let startDate;
-    switch (currentSummaryPeriod) {
-        case 'monthly': startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-        case 'weekly': startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-        default: startDate = new Date('2000-01-01'); break;
-    }
+    const startDate = getPeriodStartDate(currentSummaryPeriod);
+    const startStr = toDateStr(startDate);
 
     const genreStats = {};
     globalAllRecords.forEach(record => {
         if (record.status === '取引完了') {
-            const orderDate = new Date(record.orderDate.split(' ')[0].replace(/\//g, '-'));
-            if (orderDate >= startDate) {
-                const type = record.productType || '未分類';
+            const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
+            if (orderDateStr >= startStr) {
+                const type = normalizeProductType(record.productType);
                 if (!genreStats[type]) genreStats[type] = 0;
                 genreStats[type] += (record.price || 0);
             }
@@ -1894,17 +1893,12 @@ function renderUserAnalysis() {
     
     // 1. 商品タイプフィルタ
     if (currentProductTypeFilter !== 'all') {
-        targetRecords = targetRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
+        targetRecords = targetRecords.filter(r => normalizeProductType(r.productType) === currentProductTypeFilter);
     }
 
     // 2. 期間フィルタ
-    const now = new Date();
-    let startDate;
-    switch (currentSummaryPeriod) {
-        case 'monthly': startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-        case 'weekly': startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-        default: startDate = new Date('2000-01-01'); break;
-    }
+    const startDate = getPeriodStartDate(currentSummaryPeriod);
+    const startStr = toDateStr(startDate);
 
     const userStats = {};
     targetRecords.forEach(record => {
@@ -1914,8 +1908,9 @@ function renderUserAnalysis() {
         const isTargetPrice = includeFreeProductsInAnalysis ? true : price > 0;
 
         if (record.status === '取引完了' && isTargetPrice) {
-            const orderDate = new Date(record.orderDate.split(' ')[0].replace(/\//g, '-'));
-            if (orderDate >= startDate) {
+            const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
+            if (orderDateStr >= startStr) {
+                const orderDate = new Date(orderDateStr);
                 const uid = record.userId;
                 if (!userStats[uid]) {
                     userStats[uid] = { totalRevenue: 0, count: 0, lastOrderDate: orderDate };
@@ -2465,7 +2460,7 @@ async function handleRangeSummary() {
     // 指定期間のデータをFirestoreから取得
     let rangeRecords = await fetchOrdersByPeriod(castId, companyGroupId, startDate, endDate);
     if (currentProductTypeFilter !== 'all') {
-      rangeRecords = rangeRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter);
+      rangeRecords = rangeRecords.filter(r => normalizeProductType(r.productType) === currentProductTypeFilter);
     }
 
     // 比較期間のデータを取得（有効な場合）
@@ -2473,7 +2468,7 @@ async function handleRangeSummary() {
     if (enableComparisonCheckbox.checked && compStartDate && compEndDate) {
       const compRawRecords = await fetchOrdersByPeriod(castId, companyGroupId, compStartDate, compEndDate);
       compFilteredRecords = currentProductTypeFilter !== 'all'
-        ? compRawRecords.filter(r => (r.productType || '未分類') === currentProductTypeFilter)
+        ? compRawRecords.filter(r => normalizeProductType(r.productType) === currentProductTypeFilter)
         : compRawRecords;
     }
 
@@ -2783,12 +2778,7 @@ window.showChannelBreakdownModal = (date, channel) => {
 
 window.showProductTrafficModal = (productName) => {
   const now = new Date();
-  let periodStart;
-  switch (currentSummaryPeriod) {
-    case 'monthly': periodStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-    case 'weekly': periodStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-    default: periodStart = new Date('2000-01-01'); break;
-  }
+  const periodStart = getPeriodStartDate(currentSummaryPeriod);
   const productAccessMap = buildProductAccessMap(periodStart, now);
   const access = getProductAccessFromMap(productAccessMap, productName);
   if (!access) {
