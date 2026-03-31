@@ -61,7 +61,7 @@ const passwordLoadingMessage = document.getElementById('password-loading-message
 // --- DOM要素 (メインコンテンツ) ---
 let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGroupError,
   castSelector, newCastNameInput, addCastButton,
-  castError, castLoadingMessage, editCastSection, editCastNameInput, editCastButton, editCastError,
+  castError, castLoadingMessage, editCastSection, editCastNameInput, editCastButton, toggleCastHiddenButton, editCastError,
   uploadSection, fileInput, searchSection,
   searchInput, loadingIndicator, resultsContainer,
   dailyDetailsModal, modalTitle, modalBody,
@@ -119,6 +119,7 @@ function showMainContentAndInitApp() {
   editCastSection = document.getElementById('editCastSection');
   editCastNameInput = document.getElementById('editCastNameInput');
   editCastButton = document.getElementById('editCastButton');
+  toggleCastHiddenButton = document.getElementById('toggleCastHiddenButton');
   editCastError = document.getElementById('editCastError');
   uploadSection = document.getElementById('upload-section');
   fileInput = document.getElementById('csvFileInput');
@@ -323,6 +324,9 @@ function setupEventListeners() {
       rangeEndDateInput.disabled = true;
       rangeSummaryButton.disabled = true;
       enableComparisonCheckbox.disabled = true;
+      updateCastVisibilityButton('');
+    } else {
+      updateCastVisibilityButton(castId);
     }
   });
 
@@ -335,6 +339,9 @@ function setupEventListeners() {
   editCastNameInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') handleEditCastName();
   });
+  if (toggleCastHiddenButton) {
+    toggleCastHiddenButton.addEventListener('click', handleToggleCastHidden);
+  }
 
   fileInput.addEventListener('change', handleFileSelect);
   searchInput.addEventListener('input', applySearchFilter);
@@ -495,9 +502,11 @@ function loadCastsForCompanyGroup(companyGroupId) {
   unsubscribeCasts = onSnapshot(q, (snapshot) => {
     const casts = [];
     snapshot.forEach((doc) => {
-      casts.push({ id: doc.id, name: doc.data().name });
+      const data = doc.data() || {};
+      casts.push({ id: doc.id, name: data.name, hidden: data.hidden === true });
     });
     casts.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+    castsMetaById = new Map(casts.map(c => [c.id, { name: c.name, hidden: c.hidden }]));
 
     const currentCastId = castSelector.value;
     castSelector.innerHTML = '<option value="">選択してください</option>';
@@ -505,17 +514,22 @@ function loadCastsForCompanyGroup(companyGroupId) {
       const option = document.createElement('option');
       option.value = cast.id;
       option.textContent = cast.name;
+      option.dataset.hidden = cast.hidden ? '1' : '0';
       castSelector.appendChild(option);
     });
 
-    if (currentCastId) {
+    if (currentCastId && castsMetaById.has(currentCastId)) {
       castSelector.value = currentCastId;
       // 編集欄の名前を最新名に同期
       if (editCastSection && !editCastSection.classList.contains('hidden')) {
         const selectedOption = castSelector.options[castSelector.selectedIndex];
         if (selectedOption) editCastNameInput.value = selectedOption.textContent;
       }
+    } else {
+      const firstVisible = casts.find(c => !c.hidden);
+      castSelector.value = firstVisible ? firstVisible.id : '';
     }
+    updateCastVisibilityButton(castSelector.value);
     enableCastManagement();
     renderCastTabs();
     renderKpiCastList();
@@ -622,6 +636,26 @@ async function handleEditCastName() {
     editCastError.textContent = 'キャスト名の更新に失敗しました。';
   } finally {
     editCastButton.disabled = false;
+  }
+}
+
+async function handleToggleCastHidden() {
+  const castId = castSelector.value;
+  const companyGroupId = companyGroupSelector.value;
+  if (!castId || !companyGroupId || !toggleCastHiddenButton) return;
+
+  const currentlyHidden = isCastHidden(castId);
+  toggleCastHiddenButton.disabled = true;
+  editCastError.textContent = '';
+  try {
+    const castDocRef = doc(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}`);
+    await setDoc(castDocRef, { hidden: !currentlyHidden }, { merge: true });
+    dashboardLoadedForGroupId = null;
+  } catch (error) {
+    console.error('キャスト表示状態の更新エラー:', error);
+    editCastError.textContent = '表示状態の更新に失敗しました。';
+  } finally {
+    toggleCastHiddenButton.disabled = false;
   }
 }
 
@@ -2844,6 +2878,7 @@ document.addEventListener('DOMContentLoaded', initializeMainApp);
 let currentTab = 'cast-detail';
 let dashboardLoadedForGroupId = null;
 let dashboardChartInstance = null;
+let castsMetaById = new Map(); // Map<castId, {name, hidden}>
 // 新フォーマット確認済みキャストIDのキャッシュ: limit(1)の余分な読み取りを省く
 const newFormatCastIds = new Set();
 // データなしが確定したキャスト（groupId:castId）
@@ -2896,10 +2931,22 @@ function switchTab(tabName) {
   if (tabName === 'kpi') {
     renderKpiCastList();
     const castId = castSelector ? castSelector.value : '';
-    if (castId) {
+    if (castId && !isCastHidden(castId)) {
       const castName = castSelector.options[castSelector.selectedIndex]?.text || '';
       const groupId = companyGroupSelector ? companyGroupSelector.value : '';
       renderKpiPanel(castId, castName, groupId);
+    } else {
+      const kpiContent = document.getElementById('kpiContent');
+      if (kpiContent) {
+        kpiContent.innerHTML = `
+          <div class="flex items-center justify-center h-full min-h-64 text-center text-slate-400">
+            <div>
+              <p class="text-base font-medium">表示中のキャストを選択してください</p>
+              <p class="text-sm mt-1">非表示キャストはKPI集計に含めていません</p>
+            </div>
+          </div>
+        `;
+      }
     }
   }
 }
@@ -2916,6 +2963,31 @@ window.switchToCastDetail = function(castId) {
   }
 };
 
+function isCastHidden(castId) {
+  if (!castId || !castSelector) return false;
+  const option = [...castSelector.options].find(opt => opt.value === castId);
+  return option ? option.dataset.hidden === '1' : false;
+}
+
+function updateCastVisibilityButton(castId) {
+  if (!toggleCastHiddenButton) return;
+  if (!castId) {
+    toggleCastHiddenButton.disabled = true;
+    toggleCastHiddenButton.textContent = '非表示にする';
+    toggleCastHiddenButton.className = 'w-full bg-slate-200 text-slate-500 font-semibold py-1.5 px-3 text-xs rounded-lg disabled:opacity-60';
+    return;
+  }
+  const hidden = isCastHidden(castId);
+  toggleCastHiddenButton.disabled = false;
+  if (hidden) {
+    toggleCastHiddenButton.textContent = '再表示する';
+    toggleCastHiddenButton.className = 'w-full bg-blue-100 text-blue-700 font-semibold py-1.5 px-3 text-xs rounded-lg hover:bg-blue-200 transition-colors';
+  } else {
+    toggleCastHiddenButton.textContent = '非表示にする';
+    toggleCastHiddenButton.className = 'w-full bg-slate-200 text-slate-700 font-semibold py-1.5 px-3 text-xs rounded-lg hover:bg-slate-300 transition-colors';
+  }
+}
+
 // -------------------------------------------------------------------
 // 期間レポートタブのキャスト名ラベルを同期
 // -------------------------------------------------------------------
@@ -2927,14 +2999,18 @@ function renderCastTabs() {
   const emptyMsg = document.getElementById('castTabEmpty');
   if (!tabList) return;
 
-  const casts = [];
+  const visibleCasts = [];
+  const hiddenCasts = [];
   for (const opt of castSelector.options) {
-    if (opt.value) casts.push({ id: opt.value, name: opt.textContent });
+    if (!opt.value) continue;
+    const cast = { id: opt.value, name: opt.textContent };
+    if (opt.dataset.hidden === '1') hiddenCasts.push(cast);
+    else visibleCasts.push(cast);
   }
 
   tabList.innerHTML = '';
 
-  if (casts.length === 0) {
+  if (visibleCasts.length === 0 && hiddenCasts.length === 0) {
     if (emptyMsg) emptyMsg.classList.remove('hidden');
     tabList.classList.add('hidden');
     return;
@@ -2942,10 +3018,13 @@ function renderCastTabs() {
 
   if (emptyMsg) emptyMsg.classList.add('hidden');
   tabList.classList.remove('hidden');
+  tabList.className = 'flex items-center gap-2 w-full min-w-max';
 
   const currentCastId = castSelector.value;
 
-  casts.forEach(cast => {
+  const visibleWrap = document.createElement('div');
+  visibleWrap.className = 'flex items-center gap-1';
+  visibleCasts.forEach(cast => {
     const btn = document.createElement('button');
     const isActive = cast.id === currentCastId;
     btn.className = isActive
@@ -2954,8 +3033,36 @@ function renderCastTabs() {
     btn.dataset.castId = cast.id;
     btn.textContent = cast.name;
     btn.onclick = () => selectCastGlobally(cast.id, cast.name);
-    tabList.appendChild(btn);
+    visibleWrap.appendChild(btn);
   });
+  tabList.appendChild(visibleWrap);
+
+  if (hiddenCasts.length > 0) {
+    const hiddenWrap = document.createElement('div');
+    hiddenWrap.className = 'ml-auto flex items-center gap-2';
+
+    const label = document.createElement('span');
+    label.className = 'text-[11px] text-slate-400 whitespace-nowrap';
+    label.textContent = '非表示中のキャスト';
+    hiddenWrap.appendChild(label);
+
+    const hiddenNames = document.createElement('div');
+    hiddenNames.className = 'flex items-center gap-2';
+    hiddenCasts.forEach(cast => {
+      const btn = document.createElement('button');
+      const isActive = cast.id === currentCastId;
+      btn.className = isActive
+        ? 'text-xs text-slate-500 font-semibold underline underline-offset-2 whitespace-nowrap'
+        : 'text-xs text-slate-400 hover:text-slate-500 whitespace-nowrap';
+      btn.dataset.castId = cast.id;
+      btn.textContent = cast.name;
+      btn.onclick = () => selectCastGlobally(cast.id, cast.name);
+      hiddenNames.appendChild(btn);
+    });
+
+    hiddenWrap.appendChild(hiddenNames);
+    tabList.appendChild(hiddenWrap);
+  }
 }
 
 // -------------------------------------------------------------------
@@ -2981,6 +3088,7 @@ function selectCastGlobally(castId, castName) {
     editCastNameInput.value = castName;
     editCastError.textContent = '';
   }
+  updateCastVisibilityButton(castId);
 
   // アップロードセクション表示
   if (uploadSection) uploadSection.classList.remove('hidden');
@@ -3020,7 +3128,7 @@ function selectCastGlobally(castId, castName) {
     loadCastData(castId);
   } else if (currentTab === 'kpi') {
     const groupId = companyGroupSelector ? companyGroupSelector.value : '';
-    renderKpiPanel(castId, castName, groupId);
+    if (!isCastHidden(castId)) renderKpiPanel(castId, castName, groupId);
   }
 }
 window.selectCastGlobally = selectCastGlobally;
@@ -3101,7 +3209,9 @@ async function loadDashboardData(groupId) {
     const casts = [];
     if (castSelector) {
       for (const opt of castSelector.options) {
-        if (opt.value) casts.push({ castId: opt.value, castName: opt.textContent || opt.value });
+        if (opt.value && opt.dataset.hidden !== '1') {
+          casts.push({ castId: opt.value, castName: opt.textContent || opt.value });
+        }
       }
     }
     if (casts.length === 0) {
@@ -3110,6 +3220,7 @@ async function loadDashboardData(groupId) {
     }
 
     const castNameById = new Map(casts.map(c => [c.castId, c.castName]));
+    const visibleCastIdSet = new Set(casts.map(c => c.castId));
     const castRevenueMap = new Map(casts.map(c => [c.castId, 0]));
     const castOrdersMap = new Map(casts.map(c => [c.castId, 0]));
     const castAccessMap = new Map(casts.map(c => [c.castId, 0]));
@@ -3127,9 +3238,10 @@ async function loadDashboardData(groupId) {
       const castsObj = data.casts || {};
       let revenue = 0;
       let orders = 0;
-      Object.values(castsObj).forEach(c => {
-        revenue += Number(c?.revenue || 0);
-        orders += Number(c?.orders || 0);
+      Object.entries(castsObj).forEach(([castId, c]) => {
+        if (!visibleCastIdSet.has(castId)) return;
+        revenue += Number(c && c.revenue ? c.revenue : 0);
+        orders += Number(c && c.orders ? c.orders : 0);
       });
       dailyRevenueMap.set(ds.id, revenue);
       dailyOrdersMap.set(ds.id, orders);
@@ -3540,7 +3652,7 @@ function renderKpiCastList() {
 
   const casts = [];
   for (const opt of castSelector.options) {
-    if (opt.value) casts.push({ id: opt.value, name: opt.textContent });
+    if (opt.value && opt.dataset.hidden !== '1') casts.push({ id: opt.value, name: opt.textContent });
   }
 
   if (casts.length === 0) {
