@@ -3231,10 +3231,13 @@ async function loadDashboardData(groupId) {
 
     const castNameById = new Map(casts.map(c => [c.castId, c.castName]));
     const visibleCastIdSet = new Set(casts.map(c => c.castId));
-    const castRevenueMap = new Map(casts.map(c => [c.castId, 0]));
-    const castOrdersMap = new Map(casts.map(c => [c.castId, 0]));
-    const castAccessMap = new Map(casts.map(c => [c.castId, 0]));
-    const productMap = new Map(); // castId::productName -> {castName, productName, revenue, quantity, productType}
+    const castRevenueByDate = new Map(); // castId -> Map<YYYY-MM-DD, revenue>
+    const castAccessByDate = new Map(); // castId -> Map<YYYY-MM-DD, access>
+    const productMap = new Map(); // castId::productName -> {castName, productName, productType, daily: Map<YYYY-MM-DD, {revenue, quantity}>}
+    casts.forEach(c => {
+      castRevenueByDate.set(c.castId, new Map());
+      castAccessByDate.set(c.castId, new Map());
+    });
 
     const dailyRevenueMap = new Map(); // YYYY-MM-DD -> revenue
     const dailyOrdersMap = new Map(); // YYYY-MM-DD -> order count
@@ -3267,7 +3270,9 @@ async function loadDashboardData(groupId) {
           const dateStr = docSnap.id;
           const total = Number(docSnap.data()?.Total || 0);
           dailyAccessMap.set(dateStr, (dailyAccessMap.get(dateStr) || 0) + total);
-          castAccessMap.set(cast.castId, (castAccessMap.get(cast.castId) || 0) + total);
+          const castDailyAccess = castAccessByDate.get(cast.castId) || new Map();
+          castDailyAccess.set(dateStr, (castDailyAccess.get(dateStr) || 0) + total);
+          castAccessByDate.set(cast.castId, castDailyAccess);
         });
       } catch {
         // アクセスデータ欠損は0扱い
@@ -3284,8 +3289,7 @@ async function loadDashboardData(groupId) {
     let doneOrders = 0;
     await runWithConcurrency(casts, 4, async (cast) => {
       const records = await fetchOrdersByPeriod(cast.castId, groupId, null, null);
-      let castRevenue = 0;
-      let castOrders = 0;
+      const castDailyRevenue = castRevenueByDate.get(cast.castId) || new Map();
 
       records.forEach(r => {
         if (r.status !== '取引完了') return;
@@ -3295,8 +3299,9 @@ async function loadDashboardData(groupId) {
         const productType = r.productType || '未分類';
         const dateStr = String(r.orderDate || '').replace(/\//g, '-').slice(0, 10);
 
-        castRevenue += revenue;
-        castOrders += 1;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+          castDailyRevenue.set(dateStr, (castDailyRevenue.get(dateStr) || 0) + revenue);
+        }
 
         if (needOrderDailyFallback && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
           dailyRevenueMap.set(dateStr, (dailyRevenueMap.get(dateStr) || 0) + revenue);
@@ -3309,25 +3314,22 @@ async function loadDashboardData(groupId) {
             castId: cast.castId,
             castName: cast.castName,
             productName,
-            revenue: 0,
-            quantity: 0,
             productType,
+            daily: new Map(),
           });
         }
         const p = productMap.get(productKey);
-        p.revenue += revenue;
-        p.quantity += quantity;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+          const d = p.daily.get(dateStr) || { revenue: 0, quantity: 0 };
+          d.revenue += revenue;
+          d.quantity += quantity;
+          p.daily.set(dateStr, d);
+        }
       });
-
-      castRevenueMap.set(cast.castId, castRevenue);
-      castOrdersMap.set(cast.castId, castOrders);
+      castRevenueByDate.set(cast.castId, castDailyRevenue);
       doneOrders += 1;
       setProgress(45 + (doneOrders / casts.length) * 40, `注文データ集計中... (${doneOrders}/${casts.length})`);
     });
-
-    const totalRevenue = [...castRevenueMap.values()].reduce((s, v) => s + v, 0);
-    const totalOrders = [...castOrdersMap.values()].reduce((s, v) => s + v, 0);
-    const totalAccess = [...castAccessMap.values()].reduce((s, v) => s + v, 0);
 
     setProgress(88, 'ダッシュボードを描画中...');
     cards.className = 'space-y-6';
@@ -3335,26 +3337,38 @@ async function loadDashboardData(groupId) {
       <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
           <p class="text-xs font-medium text-slate-500 mb-1">全体売上合計</p>
-          <p class="text-2xl font-bold text-slate-800">¥${totalRevenue.toLocaleString()}</p>
+          <p id="dashboardTotalRevenue" class="text-2xl font-bold text-slate-800">¥0</p>
+          <p id="dashboardSummaryPeriod" class="text-[11px] text-slate-400 mt-1">-</p>
         </div>
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
           <p class="text-xs font-medium text-slate-500 mb-1">全体注文数</p>
-          <p class="text-2xl font-bold text-slate-800">${totalOrders.toLocaleString()}件</p>
+          <p id="dashboardTotalOrders" class="text-2xl font-bold text-slate-800">0件</p>
         </div>
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
           <p class="text-xs font-medium text-slate-500 mb-1">全体アクセス数合計</p>
-          <p class="text-2xl font-bold text-slate-800">${totalAccess.toLocaleString()}</p>
+          <p id="dashboardTotalAccess" class="text-2xl font-bold text-slate-800">0</p>
         </div>
       </section>
 
       <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
         <div class="flex items-center justify-between gap-3 mb-3">
           <h3 class="text-sm sm:text-base font-bold text-slate-800">日別推移（全キャスト合算）</h3>
-          <div id="dashboardPeriodButtons" class="flex items-center gap-2">
+          <div id="dashboardPeriodButtons" class="flex items-center gap-2 flex-wrap justify-end">
             <button data-period="30d" class="dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white">直近30日</button>
             <button data-period="90d" class="dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">直近90日</button>
             <button data-period="all" class="dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700">全期間</button>
           </div>
+        </div>
+        <div class="flex items-end gap-2 mb-3 flex-wrap">
+          <div>
+            <label class="block text-[11px] text-slate-500 mb-1">開始日</label>
+            <input id="dashboardStartDate" type="date" class="text-xs px-2 py-1.5 border border-slate-300 rounded-md">
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-500 mb-1">終了日</label>
+            <input id="dashboardEndDate" type="date" class="text-xs px-2 py-1.5 border border-slate-300 rounded-md">
+          </div>
+          <button id="dashboardApplyDate" class="px-3 py-1.5 text-xs rounded-md bg-slate-700 text-white">この期間を適用</button>
         </div>
         <div class="relative h-80">
           <canvas id="dashboardTrendChart"></canvas>
@@ -3373,16 +3387,21 @@ async function loadDashboardData(groupId) {
     `;
 
     const allDates = [...new Set([...dailyRevenueMap.keys(), ...dailyAccessMap.keys()])].sort();
-    const renderDashboardChart = (period) => {
-      const now = new Date();
-      let startStr = null;
-      if (period === '30d') {
-        startStr = toDateStr(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000));
-      } else if (period === '90d') {
-        startStr = toDateStr(new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000));
-      }
+    const dashboardStartDateInput = document.getElementById('dashboardStartDate');
+    const dashboardEndDateInput = document.getElementById('dashboardEndDate');
+    const dashboardApplyDateBtn = document.getElementById('dashboardApplyDate');
+    const dashboardTotalRevenueEl = document.getElementById('dashboardTotalRevenue');
+    const dashboardTotalOrdersEl = document.getElementById('dashboardTotalOrders');
+    const dashboardTotalAccessEl = document.getElementById('dashboardTotalAccess');
+    const dashboardSummaryPeriodEl = document.getElementById('dashboardSummaryPeriod');
 
-      const filteredDates = startStr ? allDates.filter(d => d >= startStr) : allDates.slice();
+    const getFilteredDates = (startStr, endStr) => {
+      return allDates.filter(d => (!startStr || d >= startStr) && (!endStr || d <= endStr));
+    };
+
+    const sumFromMapByDates = (m, dates) => dates.reduce((s, d) => s + (m.get(d) || 0), 0);
+
+    const renderDashboardChart = (filteredDates) => {
       const labels = filteredDates.map(d => d.slice(5));
       const revenueData = filteredDates.map(d => dailyRevenueMap.get(d) || 0);
       const accessData = filteredDates.map(d => dailyAccessMap.get(d) || 0);
@@ -3442,29 +3461,42 @@ async function loadDashboardData(groupId) {
       });
     };
 
-    const castRevenueRanking = casts
-      .map(c => ({
-        castId: c.castId,
-        castName: c.castName,
-        revenue: castRevenueMap.get(c.castId) || 0,
-      }))
-      .sort((a, b) => b.revenue - a.revenue);
-
-    const castAccessRanking = casts
-      .map(c => ({
-        castId: c.castId,
-        castName: c.castName,
-        access: castAccessMap.get(c.castId) || 0,
-      }))
-      .sort((a, b) => b.access - a.access);
-
-    const products = [...productMap.values()];
-    const productRevenueRanking = products.slice().sort((a, b) => b.revenue - a.revenue);
-    const productQuantityRanking = products.slice().sort((a, b) => b.quantity - a.quantity);
-
     const rankingContent = document.getElementById('dashboardRankingContent');
-    const renderRankingTab = (tabName) => {
+    const renderRankingTab = (tabName, startStr, endStr) => {
       if (!rankingContent) return;
+      const filteredDates = getFilteredDates(startStr, endStr);
+      const dateSet = new Set(filteredDates);
+
+      const castRevenueRanking = casts
+        .map(c => {
+          const revByDate = castRevenueByDate.get(c.castId) || new Map();
+          const revenue = [...revByDate.entries()].reduce((s, [d, v]) => (dateSet.has(d) ? s + v : s), 0);
+          return { castId: c.castId, castName: c.castName, revenue };
+        })
+        .sort((a, b) => b.revenue - a.revenue);
+
+      const castAccessRanking = casts
+        .map(c => {
+          const accByDate = castAccessByDate.get(c.castId) || new Map();
+          const access = [...accByDate.entries()].reduce((s, [d, v]) => (dateSet.has(d) ? s + v : s), 0);
+          return { castId: c.castId, castName: c.castName, access };
+        })
+        .sort((a, b) => b.access - a.access);
+
+      const products = [...productMap.values()].map(p => {
+        let revenue = 0;
+        let quantity = 0;
+        for (const [d, stat] of p.daily.entries()) {
+          if (!dateSet.has(d)) continue;
+          revenue += stat.revenue || 0;
+          quantity += stat.quantity || 0;
+        }
+        return { ...p, revenue, quantity };
+      });
+
+      const productRevenueRanking = products.slice().sort((a, b) => b.revenue - a.revenue);
+      const productQuantityRanking = products.slice().sort((a, b) => b.quantity - a.quantity);
+
       if (tabName === 'cast-revenue') {
         rankingContent.innerHTML = `
           <div class="overflow-x-auto">
@@ -3548,12 +3580,49 @@ async function loadDashboardData(groupId) {
       `;
     };
 
+    const updateDashboardByRange = () => {
+      const startStr = dashboardStartDateInput ? dashboardStartDateInput.value : '';
+      const endStr = dashboardEndDateInput ? dashboardEndDateInput.value : '';
+      if (startStr && endStr && startStr > endStr) return;
+
+      const filteredDates = getFilteredDates(startStr, endStr);
+      const periodLabel = startStr && endStr ? `${startStr} 〜 ${endStr}` : '全期間';
+      const totalRevenue = sumFromMapByDates(dailyRevenueMap, filteredDates);
+      const totalOrders = sumFromMapByDates(dailyOrdersMap, filteredDates);
+      const totalAccess = sumFromMapByDates(dailyAccessMap, filteredDates);
+      if (dashboardTotalRevenueEl) dashboardTotalRevenueEl.textContent = `¥${totalRevenue.toLocaleString()}`;
+      if (dashboardTotalOrdersEl) dashboardTotalOrdersEl.textContent = `${totalOrders.toLocaleString()}件`;
+      if (dashboardTotalAccessEl) dashboardTotalAccessEl.textContent = `${totalAccess.toLocaleString()}`;
+      if (dashboardSummaryPeriodEl) dashboardSummaryPeriodEl.textContent = periodLabel;
+
+      renderDashboardChart(filteredDates);
+      const activeRankTab = cards.querySelector('.dashboard-rank-tab.bg-blue-600')?.dataset.rankTab || 'cast-revenue';
+      renderRankingTab(activeRankTab, startStr, endStr);
+    };
+
     const periodButtons = cards.querySelectorAll('.dashboard-period-btn');
+    const setRangeByPreset = (period) => {
+      if (!dashboardStartDateInput || !dashboardEndDateInput) return;
+      if (allDates.length === 0) {
+        dashboardStartDateInput.value = '';
+        dashboardEndDateInput.value = '';
+        return;
+      }
+      const latestDate = allDates[allDates.length - 1];
+      const latest = new Date(`${latestDate}T00:00:00`);
+      let start = null;
+      if (period === '30d') start = new Date(latest.getTime() - 30 * 24 * 60 * 60 * 1000);
+      if (period === '90d') start = new Date(latest.getTime() - 90 * 24 * 60 * 60 * 1000);
+      dashboardEndDateInput.value = latestDate;
+      dashboardStartDateInput.value = start ? toDateStr(start) : allDates[0];
+    };
+
     periodButtons.forEach(btn => {
       btn.addEventListener('click', () => {
         periodButtons.forEach(b => b.className = 'dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700');
         btn.className = 'dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white';
-        renderDashboardChart(btn.dataset.period || '30d');
+        setRangeByPreset(btn.dataset.period || '30d');
+        updateDashboardByRange();
       });
     });
 
@@ -3562,12 +3631,21 @@ async function loadDashboardData(groupId) {
       btn.addEventListener('click', () => {
         rankingButtons.forEach(b => b.className = 'dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700');
         btn.className = 'dashboard-rank-tab px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white';
-        renderRankingTab(btn.dataset.rankTab || 'cast-revenue');
+        const startStr = dashboardStartDateInput ? dashboardStartDateInput.value : '';
+        const endStr = dashboardEndDateInput ? dashboardEndDateInput.value : '';
+        renderRankingTab(btn.dataset.rankTab || 'cast-revenue', startStr, endStr);
       });
     });
 
-    renderDashboardChart('30d');
-    renderRankingTab('cast-revenue');
+    if (dashboardApplyDateBtn) {
+      dashboardApplyDateBtn.addEventListener('click', () => {
+        periodButtons.forEach(b => b.className = 'dashboard-period-btn px-3 py-1.5 text-xs rounded-md bg-slate-100 text-slate-700');
+        updateDashboardByRange();
+      });
+    }
+
+    setRangeByPreset('30d');
+    updateDashboardByRange();
 
     dashboardLoadedForGroupId = groupId;
     setProgress(100, '完了');
