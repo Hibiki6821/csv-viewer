@@ -3038,30 +3038,40 @@ function renderCastTabs() {
   tabList.appendChild(visibleWrap);
 
   if (hiddenCasts.length > 0) {
-    const hiddenWrap = document.createElement('div');
-    hiddenWrap.className = 'ml-auto flex items-center gap-2';
+    const hiddenTabWrap = document.createElement('div');
+    hiddenTabWrap.className = 'ml-auto relative';
 
-    const label = document.createElement('span');
-    label.className = 'text-[11px] text-slate-400 whitespace-nowrap';
-    label.textContent = '非表示中のキャスト';
-    hiddenWrap.appendChild(label);
+    const details = document.createElement('details');
+    details.className = 'relative';
 
-    const hiddenNames = document.createElement('div');
-    hiddenNames.className = 'flex items-center gap-2';
+    const isHiddenSelected = hiddenCasts.some(c => c.id === currentCastId);
+    const summary = document.createElement('summary');
+    summary.className = isHiddenSelected
+      ? 'list-none cursor-pointer px-3 py-1 rounded-md text-xs font-semibold text-blue-600 bg-blue-50 whitespace-nowrap'
+      : 'list-none cursor-pointer px-3 py-1 rounded-md text-xs font-medium text-slate-500 bg-slate-100 hover:bg-slate-200 whitespace-nowrap transition-colors';
+    summary.textContent = `非表示中のキャスト (${hiddenCasts.length})`;
+    details.appendChild(summary);
+
+    const panel = document.createElement('div');
+    panel.className = 'absolute right-0 mt-1 w-56 max-h-60 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg p-1 z-50';
     hiddenCasts.forEach(cast => {
       const btn = document.createElement('button');
       const isActive = cast.id === currentCastId;
       btn.className = isActive
-        ? 'text-xs text-slate-500 font-semibold underline underline-offset-2 whitespace-nowrap'
-        : 'text-xs text-slate-400 hover:text-slate-500 whitespace-nowrap';
+        ? 'w-full text-left px-2 py-1.5 rounded text-xs font-semibold text-blue-700 bg-blue-50'
+        : 'w-full text-left px-2 py-1.5 rounded text-xs text-slate-600 hover:bg-slate-100';
       btn.dataset.castId = cast.id;
       btn.textContent = cast.name;
-      btn.onclick = () => selectCastGlobally(cast.id, cast.name);
-      hiddenNames.appendChild(btn);
+      btn.onclick = () => {
+        details.removeAttribute('open');
+        selectCastGlobally(cast.id, cast.name);
+      };
+      panel.appendChild(btn);
     });
 
-    hiddenWrap.appendChild(hiddenNames);
-    tabList.appendChild(hiddenWrap);
+    details.appendChild(panel);
+    hiddenTabWrap.appendChild(details);
+    tabList.appendChild(hiddenTabWrap);
   }
 }
 
