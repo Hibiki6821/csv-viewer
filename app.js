@@ -64,7 +64,7 @@ const passwordLoadingMessage = document.getElementById('password-loading-message
 let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGroupError,
   castSelector, newCastNameInput, addCastButton,
   castError, castLoadingMessage, editCastSection, editCastNameInput, editCastButton, toggleCastHiddenButton, editCastError,
-  uploadSection, fileInput, searchSection,
+  /* uploadSection, fileInput, */ searchSection,
   searchInput, loadingIndicator, resultsContainer,
   dailyDetailsModal, modalTitle, modalBody,
   rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
@@ -124,8 +124,8 @@ function showMainContentAndInitApp() {
   editCastButton = document.getElementById('editCastButton');
   toggleCastHiddenButton = document.getElementById('toggleCastHiddenButton');
   editCastError = document.getElementById('editCastError');
-  uploadSection = document.getElementById('upload-section');
-  fileInput = document.getElementById('csvFileInput');
+  // uploadSection = document.getElementById('upload-section');
+  // fileInput = document.getElementById('csvFileInput');
   searchSection = document.getElementById('search-section');
   searchInput = document.getElementById('searchInput');
   loadingIndicator = document.getElementById('loadingIndicator');
@@ -312,7 +312,7 @@ function setupEventListeners() {
     } else {
       castSelector.innerHTML = '<option value="">会社グループを選択してください</option>';
       castSelector.disabled = true;
-      uploadSection.classList.add('hidden');
+      // uploadSection.classList.add('hidden');
       resultsContainer.innerHTML = '';
       searchSection.classList.add('hidden');
       productTypeFilterContainer.classList.add('hidden');
@@ -334,7 +334,7 @@ function setupEventListeners() {
   castSelector.addEventListener('change', (e) => {
     const castId = e.target.value;
     if (!castId) {
-      uploadSection.classList.add('hidden');
+      // uploadSection.classList.add('hidden');
       editCastSection.classList.add('hidden');
       resultsContainer.innerHTML = '';
       searchSection.classList.add('hidden');
@@ -368,7 +368,7 @@ function setupEventListeners() {
     toggleCastHiddenButton.addEventListener('click', handleToggleCastHidden);
   }
 
-  fileInput.addEventListener('change', handleFileSelect);
+  // fileInput.addEventListener('change', handleFileSelect);
   searchInput.addEventListener('input', applySearchFilter);
   rangeSummaryButton.addEventListener('click', handleRangeSummary);
 
@@ -748,178 +748,16 @@ async function handleToggleCastHidden() {
   }
 }
 
-/**
- * ファイルが選択されたときに処理を開始します。
+/*
+ * ===== CSV手動アップロード機能（廃止） =====
+ *
+function handleFileSelect(event) { ... }
+function parseCSV(csvText) { ... }
+async function saveDataToFirestore(castId, records, header) { ... }
+ *
+ * fantia_uploader.py による自動アップロードに移行したため不使用。
+ * ==============================================
  */
-function handleFileSelect(event) {
-  const file = event.target.files[0];
-  const castId = castSelector.value;
-  if (!file || !castId) return;
-
-  resultsContainer.innerHTML = '';
-  loadingIndicator.classList.remove('hidden');
-  searchSection.classList.add('hidden');
-  productTypeFilterContainer.classList.add('hidden');
-
-  const reader = new FileReader();
-
-  reader.onload = async function (e) {
-    try {
-      const csvText = e.target.result;
-      const { header, records } = parseCSV(csvText);
-      await saveDataToFirestore(castId, records, header);
-      // アップロード後はキャッシュをクリアして最新データを読み込む
-      const companyGroupId = companyGroupSelector.value;
-      const castKey = makeCastCacheKey(companyGroupId, castId);
-      noDataCastIds.delete(castKey);
-      newFormatCastIds.delete(castKey);
-      allTimeOrdersCache.delete(castKey);
-      for (const key of ordersRangeCache.keys()) {
-        if (key.startsWith(`${companyGroupId}:${castId}:`)) ordersRangeCache.delete(key);
-      }
-      await loadCastData(castId); // 完了後に再読み込み
-      console.log("CSVデータの保存・分析が完了しました。");
-    } catch (error) {
-      console.error("エラーが発生しました:", error);
-      displayError("ファイルの処理中にエラーが発生しました。" + error.message);
-    } finally {
-      loadingIndicator.classList.add('hidden');
-      fileInput.value = '';
-    }
-  };
-
-  reader.onerror = function () {
-    displayError("ファイルの読み込みに失敗しました。");
-    loadingIndicator.classList.add('hidden');
-  };
-
-  reader.readAsText(file, 'UTF-8');
-}
-
-/**
- * CSV文字列をパースしてヘッダーとデータ記録に分割します。
- * 商品のタイプ列にも対応。
- */
-function parseCSV(csvText) {
-  const lines = csvText.replace(/\r/g, '').trim().split('\n');
-
-  if (lines.length < 4) {
-    throw new Error("CSVデータが不十分か、形式が正しくありません。");
-  }
-
-  const parseLine = (line) => {
-    const result = [];
-    let field = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          field += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        result.push(field.trim());
-        field = '';
-      } else {
-        field += char;
-      }
-    }
-    result.push(field.trim());
-    return result;
-  };
-
-  const headerLine = lines[2]; // ヘッダーは3行目
-  const dataLines = lines.slice(3); // データは4行目以降
-
-  const header = headerLine.split(',').map(h => h.trim());
-  const records = dataLines.filter(line => line.trim() !== '').map(line => parseLine(line));
-
-  const requiredColumns = ['注文ステータス', '注文日時', '商品名', '数量', 'ユーザーID', '合計金額（税込）', '注文ID'];
-  requiredColumns.forEach(colName => {
-    if (header.indexOf(colName) === -1) {
-      throw new Error(`必要な列が見つかりません: ${colName}`);
-    }
-  });
-
-  return { header, records };
-}
-
-/**
- * パースされたCSVデータをFirestoreにバッチ書き込みします。
- * 商品タイプ(productType)も保存します。
- */
-async function saveDataToFirestore(castId, records, header) {
-  console.log(`Firestoreへのバッチ書き込み開始... (${records.length}件)`);
-
-  const indices = {
-    status: header.indexOf('注文ステータス'),
-    date: header.indexOf('注文日時'),
-    productName: header.indexOf('商品名'),
-    quantity: header.indexOf('数量'),
-    userId: header.indexOf('ユーザーID'),
-    price: header.indexOf('合計金額（税込）'),
-    orderId: header.indexOf('注文ID'),
-    productType: header.indexOf('商品のタイプ') // 新規追加（存在しない場合は-1）
-  };
-
-  let batch = writeBatch(db);
-  let operationCount = 0;
-  const companyGroupId = companyGroupSelector.value;
-  const collectionRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/orders`);
-  for (const record of records) {
-    if (record.length < header.length) continue;
-
-    const orderId = record[indices.orderId];
-    if (!orderId) continue;
-
-    // 商品タイプを取得（列がない場合は '未分類' とする）
-    let productType = '未分類';
-    if (indices.productType !== -1 && record[indices.productType]) {
-      productType = record[indices.productType];
-    }
-
-    const rawDate = record[indices.date] || '';
-    const normalizedDate = rawDate.replace(/\//g, '-');
-    const datePrefix = normalizedDate.slice(0, 10); // YYYY-MM-DD
-
-    const orderData = {
-      orderId: orderId,
-      status: record[indices.status],
-      orderDate: normalizedDate,
-      productName: record[indices.productName],
-      quantity: parseCsvInt(record[indices.quantity]),
-      userId: record[indices.userId],
-      price: parseCsvInt(record[indices.price]),
-      productType: normalizeProductType(productType)
-    };
-
-    const docRef = doc(collectionRef, `${datePrefix}_${orderId}`);
-    batch.set(docRef, orderData);
-    // 旧フォーマット（orderId のみ）のドキュメントも削除（存在しない場合は無視される）
-    batch.delete(doc(collectionRef, orderId));
-
-    operationCount += 2;
-    if (operationCount >= 498) {
-      await batch.commit();
-      batch = writeBatch(db);
-      operationCount = 0;
-      console.log("バッチをコミットしました (500件)");
-    }
-  }
-
-  if (operationCount > 0) {
-    await batch.commit();
-    console.log(`最後のバッチをコミットしました (${operationCount}件)`);
-  }
-
-  // データ更新後は注文クエリキャッシュを破棄
-  ordersRangeCache.clear();
-  noDataCastIds.clear();
-  allTimeOrdersCache.clear();
-}
 
 /**
  * Dateオブジェクトを "YYYY-MM-DD" 文字列に変換します。
@@ -935,10 +773,7 @@ function toMonthStr(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function parseCsvInt(value) {
-  const n = parseInt(String(value || '').replace(/,/g, '').trim(), 10);
-  return Number.isFinite(n) ? n : 0;
-}
+// function parseCsvInt(value) { ... } // CSV手動アップロード廃止に伴い不使用
 
 function normalizeProductType(value) {
   const t = String(value || '').trim();
@@ -1774,9 +1609,9 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, f
             </div>
 
             <div class="space-y-6">
-                ${createTrafficSourceTable(periodStart, periodEnd)}
                 ${createDailyStatsTable(dailyStats)}
                 ${createProductStatsTable(productStats, productAccessMap)}
+                ${createTrafficSourceTable(periodStart, periodEnd)}
             </div>
 
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 mt-6">
@@ -3204,7 +3039,7 @@ function selectCastGlobally(castId, castName) {
   updateCastVisibilityButton(castId);
 
   // アップロードセクション表示
-  if (uploadSection) uploadSection.classList.remove('hidden');
+  // if (uploadSection) uploadSection.classList.remove('hidden');
 
   // 期間レポートのキャスト名を更新
   const castNameEl = document.getElementById('periodReportCastName');
