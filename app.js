@@ -30,6 +30,8 @@ let unsubscribeCasts = null; // onSnapshotリスナー解除用
 let globalAllRecords = []; // フィルタリング前の全レコード
 let globalDailyStats = {}; // 現在表示中の(フィルタ済み)日別データ
 let currentSummaryPeriod = 'monthly'; // 現在のサマリー期間 ('all', 'monthly', 'weekly')
+let customSummaryStartDate = '';
+let customSummaryEndDate = '';
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
@@ -68,6 +70,7 @@ let companyGroupSelector, newCompanyGroupInput, addCompanyGroupButton, companyGr
   rangeStartDateInput, rangeEndDateInput, rangeSummaryButton,
   rangeSummaryModal, rangeModalTitle, rangeModalBody,
   summaryAllButton, summaryMonthlyButton, summaryWeeklyButton,
+  summaryCustomStartDateInput, summaryCustomEndDateInput, summaryCustomApplyButton,
   productTypeFilterContainer, productTypeTabs,
   excludeFreeRangeCheckbox, exclude100YenRangeCheckbox,
   enableComparisonCheckbox, comparisonSettingsArea, comparisonModeSelector, customComparisonDates, comparisonStartDate, comparisonEndDate;
@@ -138,6 +141,9 @@ function showMainContentAndInitApp() {
   summaryAllButton = document.getElementById('summaryAllButton');
   summaryMonthlyButton = document.getElementById('summaryMonthlyButton');
   summaryWeeklyButton = document.getElementById('summaryWeeklyButton');
+  summaryCustomStartDateInput = document.getElementById('summaryCustomStartDate');
+  summaryCustomEndDateInput = document.getElementById('summaryCustomEndDate');
+  summaryCustomApplyButton = document.getElementById('summaryCustomApplyButton');
   productTypeFilterContainer = document.getElementById('productTypeFilterContainer');
   productTypeTabs = document.getElementById('productTypeTabs');
   
@@ -156,6 +162,13 @@ function showMainContentAndInitApp() {
   setupEventListeners();
   switchTab('cast-detail');
   initMonthQuickSelect();
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(start.getDate() - 30);
+  customSummaryStartDate = toDateStr(start);
+  customSummaryEndDate = toDateStr(today);
+  if (summaryCustomStartDateInput) summaryCustomStartDateInput.value = customSummaryStartDate;
+  if (summaryCustomEndDateInput) summaryCustomEndDateInput.value = customSummaryEndDate;
 }
 
 /**
@@ -293,6 +306,9 @@ function setupEventListeners() {
       summaryAllButton.disabled = false;
       summaryMonthlyButton.disabled = false;
       summaryWeeklyButton.disabled = false;
+      if (summaryCustomStartDateInput) summaryCustomStartDateInput.disabled = false;
+      if (summaryCustomEndDateInput) summaryCustomEndDateInput.disabled = false;
+      if (summaryCustomApplyButton) summaryCustomApplyButton.disabled = false;
     } else {
       castSelector.innerHTML = '<option value="">会社グループを選択してください</option>';
       castSelector.disabled = true;
@@ -303,6 +319,9 @@ function setupEventListeners() {
       summaryAllButton.disabled = true;
       summaryMonthlyButton.disabled = true;
       summaryWeeklyButton.disabled = true;
+      if (summaryCustomStartDateInput) summaryCustomStartDateInput.disabled = true;
+      if (summaryCustomEndDateInput) summaryCustomEndDateInput.disabled = true;
+      if (summaryCustomApplyButton) summaryCustomApplyButton.disabled = true;
     }
   });
 
@@ -324,8 +343,14 @@ function setupEventListeners() {
       rangeEndDateInput.disabled = true;
       rangeSummaryButton.disabled = true;
       enableComparisonCheckbox.disabled = true;
+      if (summaryCustomStartDateInput) summaryCustomStartDateInput.disabled = true;
+      if (summaryCustomEndDateInput) summaryCustomEndDateInput.disabled = true;
+      if (summaryCustomApplyButton) summaryCustomApplyButton.disabled = true;
       updateCastVisibilityButton('');
     } else {
+      if (summaryCustomStartDateInput) summaryCustomStartDateInput.disabled = false;
+      if (summaryCustomEndDateInput) summaryCustomEndDateInput.disabled = false;
+      if (summaryCustomApplyButton) summaryCustomApplyButton.disabled = false;
       updateCastVisibilityButton(castId);
     }
   });
@@ -350,6 +375,9 @@ function setupEventListeners() {
   summaryAllButton.addEventListener('click', () => handleSummaryPeriodChange('all'));
   summaryMonthlyButton.addEventListener('click', () => handleSummaryPeriodChange('monthly'));
   summaryWeeklyButton.addEventListener('click', () => handleSummaryPeriodChange('weekly'));
+  if (summaryCustomApplyButton) {
+    summaryCustomApplyButton.addEventListener('click', handleCustomSummaryRangeApply);
+  }
   
   // 比較機能のUI制御
   enableComparisonCheckbox.addEventListener('change', (e) => {
@@ -417,6 +445,64 @@ async function handleSummaryPeriodChange(period) {
   }
 }
 
+async function handleCustomSummaryRangeApply() {
+  const castId = castSelector.value;
+  const companyGroupId = companyGroupSelector.value;
+  if (!castId || !companyGroupId) return;
+
+  const startVal = summaryCustomStartDateInput ? summaryCustomStartDateInput.value : '';
+  const endVal = summaryCustomEndDateInput ? summaryCustomEndDateInput.value : '';
+  if (!startVal || !endVal) {
+    displayError('開始日と終了日を入力してください。');
+    return;
+  }
+  if (startVal > endVal) {
+    displayError('開始日は終了日以前にしてください。');
+    return;
+  }
+
+  customSummaryStartDate = startVal;
+  customSummaryEndDate = endVal;
+  currentSummaryPeriod = 'custom';
+  updateSummaryButtonStyles('custom');
+
+  loadingIndicator.classList.remove('hidden');
+  resultsContainer.innerHTML = '';
+  searchSection.classList.add('hidden');
+  productTypeFilterContainer.classList.add('hidden');
+
+  const bar2 = document.getElementById('loadingProgressBar');
+  const pctEl2 = document.getElementById('loadingProgressPercent');
+  const textEl2 = document.getElementById('loadingIndicatorText');
+  if (bar2) bar2.style.width = '0%';
+  if (pctEl2) pctEl2.textContent = '0%';
+  if (textEl2) textEl2.textContent = '注文データ取得中...';
+
+  try {
+    await loadOrdersForPeriod(castId, companyGroupId);
+    if (bar2) bar2.style.width = '100%';
+    if (pctEl2) pctEl2.textContent = '100%';
+    if (textEl2) textEl2.textContent = 'データを分析中...';
+
+    if (globalAllRecords.length === 0) {
+      displayError('この期間にはデータがありません。');
+      return;
+    }
+
+    extractAvailableProductTypes(globalAllRecords);
+    renderProductTypeTabs();
+    currentProductTypeFilter = 'all';
+    updateViewFromGlobalData();
+    searchSection.classList.remove('hidden');
+    productTypeFilterContainer.classList.remove('hidden');
+  } catch (error) {
+    console.error('カスタム期間変更時のデータ読み込みエラー:', error);
+    displayError('データの読み込み中にエラーが発生しました: ' + error.message);
+  } finally {
+    loadingIndicator.classList.add('hidden');
+  }
+}
+
 
 /**
  * 会社グループ管理UIを有効化します。
@@ -443,6 +529,9 @@ function enableCastManagement() {
   
   enableComparisonCheckbox.disabled = false;
   rangeSummaryButton.disabled = false;
+  if (summaryCustomStartDateInput) summaryCustomStartDateInput.disabled = false;
+  if (summaryCustomEndDateInput) summaryCustomEndDateInput.disabled = false;
+  if (summaryCustomApplyButton) summaryCustomApplyButton.disabled = false;
 }
 
 /**
@@ -860,6 +949,9 @@ function getPeriodStartDate(period) {
   const now = new Date();
   const start = new Date(now);
   switch (period) {
+    case 'custom':
+      if (customSummaryStartDate) return new Date(`${customSummaryStartDate}T00:00:00`);
+      return new Date('2000-01-01T00:00:00');
     case 'monthly':
       start.setDate(start.getDate() - 30);
       break;
@@ -872,6 +964,18 @@ function getPeriodStartDate(period) {
   }
   start.setHours(0, 0, 0, 0);
   return start;
+}
+
+function getSummaryDateRange(period) {
+  const now = new Date();
+  let startDate = getPeriodStartDate(period);
+  let endDate = new Date(now);
+  if (period === 'custom' && customSummaryEndDate) {
+    endDate = new Date(`${customSummaryEndDate}T23:59:59`);
+  }
+  startDate.setHours(0, 0, 0, 0);
+  endDate.setHours(23, 59, 59, 999);
+  return { startDate, endDate };
 }
 
 const ARCHIVE_CHUNK_SIZE = 800;
@@ -1111,6 +1215,10 @@ async function loadOrdersForPeriod(castId, companyGroupId) {
   let startDate, endDate;
 
   switch (currentSummaryPeriod) {
+    case 'custom':
+      startDate = customSummaryStartDate ? new Date(`${customSummaryStartDate}T00:00:00`) : null;
+      endDate = customSummaryEndDate ? new Date(`${customSummaryEndDate}T23:59:59`) : null;
+      break;
     case 'weekly':
       startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
       endDate = now;
@@ -1139,9 +1247,12 @@ function updateSummaryButtonStyles(period) {
     btn.classList.add('bg-gray-500', 'hover:bg-gray-600');
   });
   const selected = period === 'all' ? summaryAllButton :
-    period === 'monthly' ? summaryMonthlyButton : summaryWeeklyButton;
-  selected.classList.remove('bg-gray-500', 'hover:bg-gray-600');
-  selected.classList.add('bg-blue-600', 'hover:bg-blue-700');
+    period === 'monthly' ? summaryMonthlyButton :
+    period === 'weekly' ? summaryWeeklyButton : null;
+  if (selected) {
+    selected.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+    selected.classList.add('bg-blue-600', 'hover:bg-blue-700');
+  }
 }
 
 /**
@@ -1544,16 +1655,16 @@ function analyzeFilteredData(records, period) {
   let totalRevenue = 0;
   let totalQuantity = 0;
 
-  const now = new Date();
-  const startDate = getPeriodStartDate(period);
+  const { startDate, endDate } = getSummaryDateRange(period);
   const startStr = toDateStr(startDate);
+  const endStr = toDateStr(endDate);
 
   for (const record of records) {
     if (record.status === '取引完了') {
       const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
 
       // 期間チェック
-      if (orderDateStr >= startStr) {
+      if (orderDateStr >= startStr && orderDateStr <= endStr) {
         const productName = record.productName;
         const quantity = record.quantity || 0;
         const userId = record.userId;
@@ -1590,7 +1701,7 @@ function analyzeFilteredData(records, period) {
 
   // ファンクラブMRR（全て表示時のみ集計）
   const fanclubMrr = currentProductTypeFilter === 'all'
-    ? computeFanclubMrrForPeriod(startDate, now)
+    ? computeFanclubMrrForPeriod(startDate, endDate)
     : 0;
 
   return { dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr };
@@ -1604,9 +1715,8 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, f
   let genreLabel = currentProductTypeFilter === 'all' ? '' : `（${currentProductTypeFilter}）`;
 
   // 現在の期間に対応する商品別アクセスマップを構築
-  const now = new Date();
-  const periodStart = getPeriodStartDate(currentSummaryPeriod);
-  const productAccessMap = buildProductAccessMap(periodStart, now);
+  const { startDate: periodStart, endDate: periodEnd } = getSummaryDateRange(currentSummaryPeriod);
+  const productAccessMap = buildProductAccessMap(periodStart, periodEnd);
 
   const yesterday = toDateStr(new Date(Date.now() - 86400000));
   const dayBefore = toDateStr(new Date(Date.now() - 2 * 86400000));
@@ -1664,7 +1774,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, f
             </div>
 
             <div class="space-y-6">
-                ${createTrafficSourceTable(periodStart, now)}
+                ${createTrafficSourceTable(periodStart, periodEnd)}
                 ${createDailyStatsTable(dailyStats)}
                 ${createProductStatsTable(productStats, productAccessMap)}
             </div>
@@ -1834,14 +1944,15 @@ function renderCharts(dailyStats) {
     }
 
     // 期間フィルタの適用（商品タイプフィルタは無視して、ジャンル比率を出したい）
-    const startDate = getPeriodStartDate(currentSummaryPeriod);
+    const { startDate, endDate } = getSummaryDateRange(currentSummaryPeriod);
     const startStr = toDateStr(startDate);
+    const endStr = toDateStr(endDate);
 
     const genreStats = {};
     globalAllRecords.forEach(record => {
         if (record.status === '取引完了') {
             const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
-            if (orderDateStr >= startStr) {
+            if (orderDateStr >= startStr && orderDateStr <= endStr) {
                 const type = normalizeProductType(record.productType);
                 if (!genreStats[type]) genreStats[type] = 0;
                 genreStats[type] += (record.price || 0);
@@ -1897,8 +2008,9 @@ function renderUserAnalysis() {
     }
 
     // 2. 期間フィルタ
-    const startDate = getPeriodStartDate(currentSummaryPeriod);
+    const { startDate, endDate } = getSummaryDateRange(currentSummaryPeriod);
     const startStr = toDateStr(startDate);
+    const endStr = toDateStr(endDate);
 
     const userStats = {};
     targetRecords.forEach(record => {
@@ -1909,7 +2021,7 @@ function renderUserAnalysis() {
 
         if (record.status === '取引完了' && isTargetPrice) {
             const orderDateStr = record.orderDate.split(' ')[0].replace(/\//g, '-');
-            if (orderDateStr >= startStr) {
+            if (orderDateStr >= startStr && orderDateStr <= endStr) {
                 const orderDate = new Date(orderDateStr);
                 const uid = record.userId;
                 if (!userStats[uid]) {
@@ -2072,7 +2184,9 @@ function createTrafficSourceTable(startDate, endDate) {
 function createSummaryCard(totalRevenue, totalQuantity, productStats, genreLabel, fanclubMrr = 0) {
   const uniqueProductCount = Object.keys(productStats).length;
   const periodLabel = currentSummaryPeriod === 'all' ? '全体' :
-    currentSummaryPeriod === 'monthly' ? '月間' : '週間';
+    currentSummaryPeriod === 'monthly' ? '月間' :
+    currentSummaryPeriod === 'weekly' ? '週間' :
+    (customSummaryStartDate && customSummaryEndDate ? `${customSummaryStartDate}〜${customSummaryEndDate}` : '指定期間');
 
   const fanclubRow = fanclubMrr > 0 ? `
     <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap justify-center gap-x-6 gap-y-1 text-sm text-center">
@@ -2777,9 +2891,8 @@ window.showChannelBreakdownModal = (date, channel) => {
 };
 
 window.showProductTrafficModal = (productName) => {
-  const now = new Date();
-  const periodStart = getPeriodStartDate(currentSummaryPeriod);
-  const productAccessMap = buildProductAccessMap(periodStart, now);
+  const { startDate: periodStart, endDate: periodEnd } = getSummaryDateRange(currentSummaryPeriod);
+  const productAccessMap = buildProductAccessMap(periodStart, periodEnd);
   const access = getProductAccessFromMap(productAccessMap, productName);
   if (!access) {
     openDetailsModal(`${productName} の流入元`, '<p class="text-sm text-gray-500">この商品のアクセスデータがありません。</p>');
