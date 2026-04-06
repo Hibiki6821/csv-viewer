@@ -1827,6 +1827,7 @@ function renderCharts(dailyStats) {
             pointRadius: 2,
             tension: 0.15,
             yAxisID: 'y',
+            hidden: true,
           },
           {
             label: 'CVR (%)',
@@ -1845,6 +1846,17 @@ function renderCharts(dailyStats) {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              afterTitle: (tooltipItems) => {
+                if (!tooltipItems.length) return '';
+                const val = totalRevenueData[tooltipItems[0].dataIndex];
+                return val != null ? `合計売上: ¥${Number(val).toLocaleString()}` : '';
+              },
+            },
+          },
+        },
         onClick: (_event, elements) => {
           if (!elements || elements.length === 0) return;
           const point = elements[0];
