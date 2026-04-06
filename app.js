@@ -1647,7 +1647,16 @@ function renderCharts(dailyStats) {
 
     const sortedDates = Object.keys(dailyStats).sort();
     const labels = sortedDates;
-    const revenueData = sortedDates.map(date => dailyStats[date].revenue);
+    const revenueData = sortedDates.map(date => {
+        let rev = dailyStats[date].revenue;
+        // 毎月1日にその月のファンクラブMRRを加算
+        if (date.endsWith('-01') && currentProductTypeFilter === 'all') {
+            const ym = date.slice(0, 7);
+            const mrrData = globalFanclubMonthly[ym];
+            if (mrrData) rev += (mrrData.mrr || 0);
+        }
+        return rev;
+    });
     const cvrData = sortedDates.map(date => {
         const access = globalAccessDataMap.get(date) || 0;
         const purchaseUU = dailyStats[date].uniqueUsers.size;
@@ -1702,6 +1711,26 @@ function renderCharts(dailyStats) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        afterLabel: (context) => {
+                            if (context.datasetIndex === 0 && currentProductTypeFilter === 'all') {
+                                const date = context.label;
+                                if (date && date.endsWith('-01')) {
+                                    const ym = date.slice(0, 7);
+                                    const mrr = globalFanclubMonthly[ym]?.mrr || 0;
+                                    if (mrr > 0) {
+                                        const orderRev = dailyStats[date]?.revenue || 0;
+                                        return [`注文: ¥${orderRev.toLocaleString()}`, `MRR: ¥${mrr.toLocaleString()}`];
+                                    }
+                                }
+                            }
+                            return [];
+                        }
+                    }
+                }
+            },
             onClick: (_event, elements) => {
                 if (!elements || elements.length === 0) return;
                 const point = elements[0];
