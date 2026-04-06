@@ -1703,7 +1703,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, f
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200 mb-4">
                 <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
                     <h2 class="text-lg font-bold text-gray-800">プラン人数推移</h2>
-                    <p class="text-xs text-slate-500">有料プランのみ表示 / 新規加入・退会バー付き</p>
+                    <div id="planMembersToggleArea" class="flex flex-wrap gap-3 text-xs items-center"></div>
                 </div>
                 <div class="relative h-72 w-full">
                     <canvas id="planMembersChart"></canvas>
@@ -2005,10 +2005,9 @@ function renderPlanMembersChart(sortedDates) {
   }
 
   const labels = sortedDates || [];
-  const planEntries = Object.values(globalApiDailyPlans || {})
-    // APIに価格がないため、現状はプラン名の文言で無料プランを除外する。
-    // 将来価格が取得できるようになれば price > 0 判定へ置き換える。
-    .filter(plan => plan && plan.name && !String(plan.name).includes('無料'));
+  const allPlans = Object.values(globalApiDailyPlans || {}).filter(p => p && p.name);
+  const paidPlans = allPlans.filter(p => !String(p.name).includes('無料'));
+  const freePlans = allPlans.filter(p => String(p.name).includes('無料'));
 
   const lineColors = [
     'rgb(59, 130, 246)',
@@ -2018,14 +2017,18 @@ function renderPlanMembersChart(sortedDates) {
     'rgb(139, 92, 246)',
     'rgb(20, 184, 166)',
   ];
+  const freeColors = [
+    'rgb(156, 163, 175)',
+    'rgb(203, 213, 225)',
+  ];
 
-  const lineDatasets = planEntries.map((plan, idx) => ({
+  const makeLine = (plan, idx, colors, hidden = false) => ({
     label: `${plan.name} 参加者`,
     data: labels.map(date => {
       const d = plan.data?.[date];
       return d && d.participants_count != null ? Number(d.participants_count || 0) : null;
     }),
-    borderColor: lineColors[idx % lineColors.length],
+    borderColor: colors[idx % colors.length],
     backgroundColor: 'transparent',
     borderWidth: 2,
     pointRadius: 2,
@@ -2033,11 +2036,15 @@ function renderPlanMembersChart(sortedDates) {
     yAxisID: 'y',
     type: 'line',
     spanGaps: true,
-  }));
+    hidden,
+  });
+
+  const paidLineDatasets = paidPlans.map((plan, idx) => makeLine(plan, idx, lineColors, false));
+  const freeLineDatasets = freePlans.map((plan, idx) => makeLine(plan, idx, freeColors, true));
 
   const newMembers = labels.map(date => {
     let sum = 0;
-    planEntries.forEach(plan => {
+    paidPlans.forEach(plan => {
       const d = plan.data?.[date];
       if (d && d.new_members_count != null) sum += Number(d.new_members_count || 0);
     });
@@ -2045,13 +2052,15 @@ function renderPlanMembersChart(sortedDates) {
   });
   const withdrawals = labels.map(date => {
     let sum = 0;
-    planEntries.forEach(plan => {
+    paidPlans.forEach(plan => {
       const d = plan.data?.[date];
       if (d && d.withdrawals_count != null) sum += Number(d.withdrawals_count || 0);
     });
     return sum;
   });
 
+  // dataset index layout:
+  // [0] 新規加入 bar, [1] 退会 bar, [2..N] paid lines, [N+1..] free lines
   const datasets = [
     {
       label: '新規加入',
@@ -2071,7 +2080,8 @@ function renderPlanMembersChart(sortedDates) {
       borderWidth: 1,
       yAxisID: 'y1',
     },
-    ...lineDatasets,
+    ...paidLineDatasets,
+    ...freeLineDatasets,
   ];
 
   planMembersChartInstance = new Chart(ctx, {
@@ -2096,6 +2106,31 @@ function renderPlanMembersChart(sortedDates) {
       },
     },
   });
+
+  // トグルエリアを構築
+  const toggleArea = document.getElementById('planMembersToggleArea');
+  if (toggleArea) {
+    toggleArea.innerHTML = '';
+
+    // 無料プランのトグル（デフォルト非表示）
+    if (freePlans.length > 0) {
+      const freeStartIdx = 2 + paidPlans.length;
+      freePlans.forEach((plan, i) => {
+        const dsIdx = freeStartIdx + i;
+        const label = document.createElement('label');
+        label.className = 'flex items-center gap-1 cursor-pointer select-none';
+        label.innerHTML = `
+          <input type="checkbox" class="rounded">
+          <span style="color:${freeColors[i % freeColors.length]}" class="font-medium">${plan.name}</span>
+        `;
+        label.querySelector('input').addEventListener('change', (e) => {
+          planMembersChartInstance.setDatasetVisibility(dsIdx, e.target.checked);
+          planMembersChartInstance.update();
+        });
+        toggleArea.appendChild(label);
+      });
+    }
+  }
 }
 
 /**
