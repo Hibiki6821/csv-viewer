@@ -50,6 +50,7 @@ let planMembersChartInstance = null;
 let globalFanclubMonthly = {};
 let globalApiDailySales = {};
 let globalApiDailyPlans = {};
+let globalFreePlanSnapshots = {}; // { 'YYYY-MM-DD': count }
 
 // --- DOM要素 (認証画面) ---
 const passwordContainer = document.getElementById('password-container');
@@ -426,9 +427,10 @@ async function handleSummaryPeriodChange(period) {
   try {
     await loadOrdersForPeriod(castId, companyGroupId);
     const { startDate, endDate } = getSummaryDateRange(currentSummaryPeriod);
-    [globalApiDailySales, globalApiDailyPlans] = await Promise.all([
+    [globalApiDailySales, globalApiDailyPlans, globalFreePlanSnapshots] = await Promise.all([
       loadApiDailySalesByPeriod(castId, companyGroupId, startDate, endDate),
       loadApiDailyPlansByPeriod(castId, companyGroupId, startDate, endDate),
+      loadFreePlanSnapshots(castId, companyGroupId, startDate, endDate),
     ]);
     if (bar2) bar2.style.width = '100%';
     if (pctEl2) pctEl2.textContent = '100%';
@@ -489,9 +491,10 @@ async function handleCustomSummaryRangeApply() {
   try {
     await loadOrdersForPeriod(castId, companyGroupId);
     const { startDate, endDate } = getSummaryDateRange(currentSummaryPeriod);
-    [globalApiDailySales, globalApiDailyPlans] = await Promise.all([
+    [globalApiDailySales, globalApiDailyPlans, globalFreePlanSnapshots] = await Promise.all([
       loadApiDailySalesByPeriod(castId, companyGroupId, startDate, endDate),
       loadApiDailyPlansByPeriod(castId, companyGroupId, startDate, endDate),
+      loadFreePlanSnapshots(castId, companyGroupId, startDate, endDate),
     ]);
     if (bar2) bar2.style.width = '100%';
     if (pctEl2) pctEl2.textContent = '100%';
@@ -897,6 +900,24 @@ async function loadApiDailyPlansByPeriod(castId, companyGroupId, startDate, endD
     });
   });
   return byPlan;
+}
+
+async function loadFreePlanSnapshots(castId, companyGroupId, startDate, endDate) {
+  if (!castId || !companyGroupId) return {};
+  const colRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/free_plan_snapshots`);
+  const result = {};
+  let snap;
+  if (startDate && endDate) {
+    const startStr = toDateStr(startDate);
+    const endStr = toDateStr(endDate);
+    snap = await getDocs(query(colRef, where(documentId(), '>=', startStr), where(documentId(), '<=', endStr)));
+  } else {
+    snap = await getDocs(colRef);
+  }
+  snap.forEach(docSnap => {
+    result[docSnap.id] = docSnap.data().count ?? null;
+  });
+  return result;
 }
 
 function getApiSalesValue(dateStr, key = 'total') {
@@ -1383,13 +1404,15 @@ async function loadCastData(castId) {
 
     // キャスト名を取得してアクセスデータをロード
     const castName = castSelector.options[castSelector.selectedIndex]?.text || '';
-    const [apiDailySales, apiDailyPlans] = await Promise.all([
+    const [apiDailySales, apiDailyPlans, freePlanSnapshots] = await Promise.all([
       loadApiDailySalesByPeriod(castId, companyGroupId, startDate, endDate),
       loadApiDailyPlansByPeriod(castId, companyGroupId, startDate, endDate),
+      loadFreePlanSnapshots(castId, companyGroupId, startDate, endDate),
     ]);
     await loadAccessDataForCast(castName);
     globalApiDailySales = apiDailySales;
     globalApiDailyPlans = apiDailyPlans;
+    globalFreePlanSnapshots = freePlanSnapshots;
     globalFanclubMonthly = {};
     setLoadingProgress(100, 'データを分析中...');
 
@@ -2084,6 +2107,32 @@ function renderPlanMembersChart(sortedDates) {
     ...freeLineDatasets,
   ];
 
+  // 無料ファンスナップショット折れ線（日次ログ、右軸y2、デフォルト非表示）
+  const snapshotColor = 'rgb(107, 114, 128)';
+  const snapshotDataset = {
+    label: '無料ファン数',
+    data: labels.map(date => {
+      const v = (globalFreePlanSnapshots || {})[date];
+      return v != null ? v : null;
+    }),
+    borderColor: snapshotColor,
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    borderDash: [4, 3],
+    pointRadius: 3,
+    tension: 0.1,
+    yAxisID: 'y2',
+    type: 'line',
+    spanGaps: true,
+    hidden: true,
+  };
+  datasets.push(snapshotDataset);
+  // dataset index layout:
+  // [0] 新規加入bar, [1] 退会bar, [2..2+paid-1] paid lines,
+  // [2+paid..2+paid+free-1] free plan lines (from daily_plans, hidden),
+  // [2+paid+free] 無料ファン数 snapshot line (hidden)
+  const snapshotDsIdx = datasets.length - 1;
+
   planMembersChartInstance = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
@@ -2103,6 +2152,13 @@ function renderPlanMembersChart(sortedDates) {
           grid: { drawOnChartArea: false },
           title: { display: true, text: '加入/退会' },
         },
+        y2: {
+          type: 'linear',
+          position: 'right',
+          grid: { drawOnChartArea: false },
+          title: { display: true, text: '無料ファン数' },
+          ticks: { color: snapshotColor },
+        },
       },
     },
   });
@@ -2112,24 +2168,18 @@ function renderPlanMembersChart(sortedDates) {
   if (toggleArea) {
     toggleArea.innerHTML = '';
 
-    // 無料プランのトグル（デフォルト非表示）
-    if (freePlans.length > 0) {
-      const freeStartIdx = 2 + paidPlans.length;
-      freePlans.forEach((plan, i) => {
-        const dsIdx = freeStartIdx + i;
-        const label = document.createElement('label');
-        label.className = 'flex items-center gap-1 cursor-pointer select-none';
-        label.innerHTML = `
-          <input type="checkbox" class="rounded">
-          <span style="color:${freeColors[i % freeColors.length]}" class="font-medium">${plan.name}</span>
-        `;
-        label.querySelector('input').addEventListener('change', (e) => {
-          planMembersChartInstance.setDatasetVisibility(dsIdx, e.target.checked);
-          planMembersChartInstance.update();
-        });
-        toggleArea.appendChild(label);
-      });
-    }
+    // 無料ファンスナップショットのトグル（デフォルト非表示）
+    const snapshotLabel = document.createElement('label');
+    snapshotLabel.className = 'flex items-center gap-1 cursor-pointer select-none';
+    snapshotLabel.innerHTML = `
+      <input type="checkbox" class="rounded">
+      <span style="color:${snapshotColor}" class="font-medium">無料ファン数推移</span>
+    `;
+    snapshotLabel.querySelector('input').addEventListener('change', (e) => {
+      planMembersChartInstance.setDatasetVisibility(snapshotDsIdx, e.target.checked);
+      planMembersChartInstance.update();
+    });
+    toggleArea.appendChild(snapshotLabel);
   }
 }
 
