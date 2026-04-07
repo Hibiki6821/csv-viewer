@@ -903,19 +903,27 @@ async function loadApiDailyPlansByPeriod(castId, companyGroupId, startDate, endD
 }
 
 async function loadFreePlanSnapshots(castId, companyGroupId, startDate, endDate) {
+  // ドキュメントIDは YYYY-MM（月チャンク）。data フィールドに { 'YYYY-MM-DD': { count, plans } } を持つ。
   if (!castId || !companyGroupId) return {};
   const colRef = collection(db, `artifacts/${appId}/public/data/companyGroups/${companyGroupId}/casts/${castId}/free_plan_snapshots`);
-  const result = {};
+  const result = {}; // { 'YYYY-MM-DD': { count, plans } }
   let snap;
   if (startDate && endDate) {
-    const startStr = toDateStr(startDate);
-    const endStr = toDateStr(endDate);
-    snap = await getDocs(query(colRef, where(documentId(), '>=', startStr), where(documentId(), '<=', endStr)));
+    const startMonth = toMonthStr(startDate);
+    const endMonth = toMonthStr(endDate);
+    snap = await getDocs(query(colRef, where(documentId(), '>=', startMonth), where(documentId(), '<=', endMonth)));
   } else {
     snap = await getDocs(colRef);
   }
+  const startStr = startDate ? toDateStr(startDate) : null;
+  const endStr = endDate ? toDateStr(endDate) : null;
   snap.forEach(docSnap => {
-    result[docSnap.id] = docSnap.data().count ?? null;
+    const data = docSnap.data()?.data || {};
+    Object.entries(data).forEach(([dateStr, val]) => {
+      if (startStr && dateStr < startStr) return;
+      if (endStr && dateStr > endStr) return;
+      result[dateStr] = val;
+    });
   });
   return result;
 }
@@ -1728,6 +1736,7 @@ function displayResults(dailyStats, productStats, totalRevenue, totalQuantity, f
                     <h2 class="text-lg font-bold text-gray-800">プラン人数推移</h2>
                     <div id="planMembersToggleArea" class="flex flex-wrap gap-3 text-xs items-center"></div>
                 </div>
+                <div id="planMembersDayOverDay" class="flex flex-wrap gap-2 mb-3 text-xs"></div>
                 <div class="relative h-72 w-full">
                     <canvas id="planMembersChart"></canvas>
                 </div>
@@ -2113,7 +2122,7 @@ function renderPlanMembersChart(sortedDates) {
     label: '無料ファン数',
     data: labels.map(date => {
       const v = (globalFreePlanSnapshots || {})[date];
-      return v != null ? v : null;
+      return v != null ? (v.count ?? v) : null;
     }),
     borderColor: snapshotColor,
     backgroundColor: 'transparent',
@@ -2162,6 +2171,49 @@ function renderPlanMembersChart(sortedDates) {
       },
     },
   });
+
+  // 前日比バッジを構築
+  const dodEl = document.getElementById('planMembersDayOverDay');
+  if (dodEl) {
+    dodEl.innerHTML = '';
+
+    // データがある最新2日を特定
+    const datesWithData = labels.filter(d => {
+      // paid plans のどれかにデータがある日
+      return paidPlans.some(p => p.data?.[d]?.participants_count != null) ||
+             (globalFreePlanSnapshots || {})[d] != null;
+    });
+    const latestDate = datesWithData[datesWithData.length - 1] || null;
+    const prevDate = datesWithData[datesWithData.length - 2] || null;
+
+    const makeBadge = (name, cur, prev, color) => {
+      if (cur == null) return '';
+      const diff = prev != null ? cur - prev : null;
+      const sign = diff == null ? '' : diff > 0 ? `+${diff}` : `${diff}`;
+      const diffColor = diff == null ? 'text-slate-400' : diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-slate-400';
+      return `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-50 border border-slate-200">
+        <span class="font-medium" style="color:${color}">${name}</span>
+        <span class="text-slate-700 font-semibold">${cur.toLocaleString()}人</span>
+        ${diff != null ? `<span class="${diffColor} font-medium">(${sign})</span>` : ''}
+      </span>`;
+    };
+
+    const badges = [];
+
+    // 有料プラン
+    paidPlans.forEach((plan, idx) => {
+      const cur = latestDate ? (plan.data?.[latestDate]?.participants_count ?? null) : null;
+      const prev = prevDate ? (plan.data?.[prevDate]?.participants_count ?? null) : null;
+      badges.push(makeBadge(plan.name, cur, prev, lineColors[idx % lineColors.length]));
+    });
+
+    // 無料ファンスナップショット
+    const snapLatest = latestDate ? ((globalFreePlanSnapshots || {})[latestDate]?.count ?? null) : null;
+    const snapPrev = prevDate ? ((globalFreePlanSnapshots || {})[prevDate]?.count ?? null) : null;
+    badges.push(makeBadge('無料ファン', snapLatest, snapPrev, snapshotColor));
+
+    dodEl.innerHTML = badges.filter(Boolean).join('');
+  }
 
   // トグルエリアを構築
   const toggleArea = document.getElementById('planMembersToggleArea');
