@@ -1309,6 +1309,14 @@ async function loadAccessDataForCast(castName) {
 }
 
 /**
+ * 指定日の全ページのscreenPageViews合計を返します。
+ */
+function getDailyTotalPV(date) {
+  const pages = globalPageDataByDate.get(date) || {};
+  return Object.values(pages).reduce((sum, p) => sum + (p.screenPageViews || 0), 0);
+}
+
+/**
  * 指定期間のページ別アクセスデータを集計します。
  * キーはページタイトル。値は {screenPageViews, activeUsers, channels, sources} の合計。
  */
@@ -1791,9 +1799,9 @@ function renderCharts(dailyStats) {
       return Math.max(0, total - plan - product);
     });
     const cvrData = sortedDates.map(date => {
-      const access = globalAccessDataMap.get(date) || 0;
+      const pv = getDailyTotalPV(date);
       const purchaseUU = dailyStats[date]?.uniqueUsers?.size || 0;
-      return access > 0 ? (purchaseUU / access) * 100 : 0;
+      return pv > 0 ? (purchaseUU / pv) * 100 : 0;
     });
 
     const CHANNEL_CONFIG = [
@@ -2478,8 +2486,8 @@ function createProductStatsTable(productStats, productAccessMap = new Map()) {
     const pvDisp = pageAccess
       ? `<span class="text-xs text-gray-500 font-mono">${pageAccess.screenPageViews.toLocaleString()}</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
-    const cvrDisp = (pageAccess && pageAccess.activeUsers > 0)
-      ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.activeUsers) * 100).toFixed(2)}%</span>`
+    const cvrDisp = (pageAccess && pageAccess.screenPageViews > 0)
+      ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.screenPageViews) * 100).toFixed(2)}%</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
     const topSource = (pageAccess && pageAccess.sources)
       ? Object.entries(pageAccess.sources).sort((a, b) => b[1] - a[1])[0]
@@ -2557,18 +2565,19 @@ function createDailyStatsTable(dailyStats) {
       ? `<span class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">${access.toLocaleString()}</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
 
-    // ARPU = 売上 ÷ アクセス数
-    const arpu = (access !== undefined && access > 0)
-      ? Math.round(dailyStats[date].revenue / access)
+    // ARPU = 売上 ÷ PV数
+    const pv = getDailyTotalPV(date);
+    const arpu = pv > 0
+      ? Math.round(dailyStats[date].revenue / pv)
       : null;
     const arpuDisplay = arpu !== null
       ? `<span class="font-semibold text-purple-600">${arpu.toLocaleString()}円</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
 
-    // CVR計算 (購入UU / アクセス数)
+    // CVR計算 (購入UU / PV数)
     let cvrDisplay = '-';
-    if (access > 0) {
-        const cvr = (purchaseUU / access) * 100;
+    if (pv > 0) {
+        const cvr = (purchaseUU / pv) * 100;
         cvrDisplay = cvr.toFixed(2) + '%';
     }
 
@@ -2849,13 +2858,14 @@ async function handleRangeSummary() {
       }
     }
 
-    // JSONアクセスデータから期間内の合計アクセス数を集計
+    // 期間内のPV合計を集計
     let totalAccess = 0;
     let compTotalAccess = 0;
-    for (const [dateStr, count] of globalAccessDataMap) {
+    for (const [dateStr] of globalPageDataByDate) {
       const d = new Date(dateStr);
-      if (d >= startDate && d <= endDate) totalAccess += count;
-      if (compStartDate && compEndDate && d >= compStartDate && d <= compEndDate) compTotalAccess += count;
+      const pv = getDailyTotalPV(dateStr);
+      if (d >= startDate && d <= endDate) totalAccess += pv;
+      if (compStartDate && compEndDate && d >= compStartDate && d <= compEndDate) compTotalAccess += pv;
     }
     const accessInfo = totalAccess > 0 ? { totalAccess, compTotalAccess } : null;
 
@@ -2994,8 +3004,8 @@ function updateRangeSummaryModal(stats, totalAllTimeUU, comparisonStats, compari
      const activeUsersDisp = pageAccess
        ? `<span class="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono">${pageAccess.activeUsers.toLocaleString()}</span>`
        : '<span class="text-gray-300 text-xs">-</span>';
-     const cvrDisp = (pageAccess && pageAccess.activeUsers > 0)
-       ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.activeUsers) * 100).toFixed(2)}%</span>`
+     const cvrDisp = (pageAccess && pageAccess.screenPageViews > 0)
+       ? `<span class="font-semibold text-green-600">${((purchaseUU / pageAccess.screenPageViews) * 100).toFixed(2)}%</span>`
        : '<span class="text-gray-300 text-xs">-</span>';
 
      return `
