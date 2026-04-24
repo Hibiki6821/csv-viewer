@@ -2565,19 +2565,18 @@ function createDailyStatsTable(dailyStats) {
       ? `<span class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">${access.toLocaleString()}</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
 
-    // ARPU = 売上 ÷ PV数
-    const pv = getDailyTotalPV(date);
-    const arpu = pv > 0
-      ? Math.round(dailyStats[date].revenue / pv)
+    // ARPU = 売上 ÷ トラフィック獲得（日次UU合計）
+    const arpu = access > 0
+      ? Math.round(dailyStats[date].revenue / access)
       : null;
     const arpuDisplay = arpu !== null
       ? `<span class="font-semibold text-purple-600">${arpu.toLocaleString()}円</span>`
       : '<span class="text-gray-300 text-xs">-</span>';
 
-    // CVR計算 (購入UU / PV数)
+    // CVR計算 (購入UU / トラフィック獲得)
     let cvrDisplay = '-';
-    if (pv > 0) {
-        const cvr = (purchaseUU / pv) * 100;
+    if (access > 0) {
+        const cvr = (purchaseUU / access) * 100;
         cvrDisplay = cvr.toFixed(2) + '%';
     }
 
@@ -2858,14 +2857,13 @@ async function handleRangeSummary() {
       }
     }
 
-    // 期間内のPV合計を集計
+    // 期間内のトラフィック獲得（各日アクセスUU合計）を集計
     let totalAccess = 0;
     let compTotalAccess = 0;
-    for (const [dateStr] of globalPageDataByDate) {
+    for (const [dateStr, dayUU] of globalAccessDataMap) {
       const d = new Date(dateStr);
-      const pv = getDailyTotalPV(dateStr);
-      if (d >= startDate && d <= endDate) totalAccess += pv;
-      if (compStartDate && compEndDate && d >= compStartDate && d <= compEndDate) compTotalAccess += pv;
+      if (d >= startDate && d <= endDate) totalAccess += dayUU;
+      if (compStartDate && compEndDate && d >= compStartDate && d <= compEndDate) compTotalAccess += dayUU;
     }
     const accessInfo = totalAccess > 0 ? { totalAccess, compTotalAccess } : null;
 
