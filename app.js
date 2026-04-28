@@ -35,6 +35,7 @@ let customSummaryEndDate = '';
 let currentProductTypeFilter = 'all'; // 現在選択中の商品タイプ ('all', 'ダウンロード商品', 'くじ', etc.)
 let availableProductTypes = new Set(); // データに含まれる商品タイプのセット
 let includeFreeProductsInAnalysis = false; // ユーザー分析に無料商品を含めるかどうか
+let excludeFreeDailyProducts = true; // 日別レポートで無料商品を除外するかどうか
 let globalAccessDataMap = new Map(); // Map<'YYYY-MM-DD', accessCount> (GA4アクセスデータ)
 let globalPageDataByDate = new Map(); // Map<'YYYY-MM-DD', {pageTitle: {screenPageViews, activeUsers}}>
 let globalChannelDataMap = new Map(); // Map<'YYYY-MM-DD', {Direct, 'Organic Social', Referral, ...}>
@@ -1591,7 +1592,7 @@ function updateViewFromGlobalData() {
 
   // 2. 期間フィルタリング (currentSummaryPeriodを使用)
   // 分析実行
-  const { dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr } = analyzeFilteredData(filteredRecords, currentSummaryPeriod);
+  const { dailyStats, productStats, totalRevenue, totalQuantity, fanclubMrr } = analyzeFilteredData(filteredRecords, currentSummaryPeriod, excludeFreeDailyProducts);
 
   // グローバルな日別統計を更新 (モーダル表示などで使用)
   globalDailyStats = dailyStats;
@@ -1604,7 +1605,7 @@ function updateViewFromGlobalData() {
 /**
  * フィルタ済みのレコードデータを分析し、統計情報を計算します。
  */
-function analyzeFilteredData(records, period) {
+function analyzeFilteredData(records, period, excludeFree = false) {
   const dailyStats = {};
   const productStats = {};
   let totalQuantity = 0;
@@ -1623,6 +1624,9 @@ function analyzeFilteredData(records, period) {
         const quantity = record.quantity || 0;
         const userId = record.userId;
         const price = record.price || 0;
+
+        // 無料商品除外フラグ
+        if (excludeFree && price === 0) continue;
 
         totalQuantity += quantity;
 
@@ -2599,7 +2603,16 @@ function createDailyStatsTable(dailyStats) {
 
   return `
             <div class="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-                <h2 class="text-xl font-bold text-gray-800 mb-4">日別レポート (クリックで詳細)</h2>
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold text-gray-800">日別レポート (クリックで詳細)</h2>
+                    <label class="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-600">
+                        <input type="checkbox" id="excludeFreeDailyCheckbox"
+                            ${excludeFreeDailyProducts ? 'checked' : ''}
+                            onchange="window.toggleFreeDailyFilter(this.checked)"
+                            class="w-4 h-4 accent-blue-500 cursor-pointer">
+                        無料商品を除外
+                    </label>
+                </div>
                 <div class="overflow-x-auto max-h-[80vh]">
                     <table class="w-full min-w-[600px]">
                         <thead class="bg-gray-50 sticky top-0 z-10">
@@ -2621,6 +2634,11 @@ function createDailyStatsTable(dailyStats) {
 }
 
 
+
+window.toggleFreeDailyFilter = function(checked) {
+  excludeFreeDailyProducts = checked;
+  updateViewFromGlobalData();
+};
 
 function displayError(message) {
   const div = document.createElement('div');
